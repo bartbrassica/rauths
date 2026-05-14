@@ -8,7 +8,7 @@ use crate::data::error::DataError;
 pub struct User {
     pub id: Uuid,
     pub email: String,
-    pub password_hash: String,
+    pub password_hash: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -63,6 +63,17 @@ impl<'a> UserRepository<'a> {
         Ok(())
     }
 
+    pub async fn create_oauth_user(&self, email: &str) -> Result<User, DataError> {
+        sqlx::query_as!(
+            User,
+            "INSERT INTO users (email) VALUES ($1) RETURNING *",
+            email,
+        )
+        .fetch_one(self.pool)
+        .await
+        .map_err(DataError::from_sqlx)
+    }
+
     pub async fn delete(&self, id: Uuid) -> Result<(), DataError> {
         sqlx::query!("DELETE FROM users WHERE id = $1", id)
             .execute(self.pool)
@@ -93,7 +104,7 @@ mod tests {
             .expect("user should exist");
 
         assert_eq!(found.id, user.id);
-        assert_eq!(found.password_hash, "hashed_password");
+        assert_eq!(found.password_hash.as_deref(), Some("hashed_password"));
     }
 
     #[sqlx::test]
@@ -137,7 +148,7 @@ mod tests {
         let user = repo.create("alice@example.com", "old_hash").await.unwrap();
         repo.update_password(user.id, "new_hash").await.unwrap();
         let updated = repo.find_by_id(user.id).await.unwrap().unwrap();
-        assert_eq!(updated.password_hash, "new_hash");
+        assert_eq!(updated.password_hash.as_deref(), Some("new_hash"));
         assert!(
             updated.updated_at > updated.created_at || updated.updated_at >= updated.created_at
         );

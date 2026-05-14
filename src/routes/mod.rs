@@ -1,3 +1,5 @@
+pub mod oauth;
+
 use std::net::SocketAddr;
 
 use axum::{
@@ -166,10 +168,11 @@ pub async fn login(
         }
     };
 
-    if !state
-        .passwords
-        .verify(&body.password, &user.password_hash)?
-    {
+    let hash = user.password_hash.as_deref().ok_or_else(|| {
+        tracing::warn!(email = %body.email, ip = %addr.ip(), event = "login_failed", reason = "oauth_only_account");
+        ApiError::Unauthorized
+    })?;
+    if !state.passwords.verify(&body.password, hash)? {
         let attempts = lockout.record_failure(&body.email).await?;
         tracing::warn!(email = %body.email, ip = %addr.ip(), attempts, event = "login_failed", reason = "invalid_password");
         return Err(ApiError::Unauthorized);
@@ -298,10 +301,11 @@ pub async fn change_password(
         .find_by_id(claims.sub)
         .await?
         .ok_or(ApiError::Unauthorized)?;
-    if !state
-        .passwords
-        .verify(&body.current_password, &user.password_hash)?
-    {
+    let hash = user
+        .password_hash
+        .as_deref()
+        .ok_or(ApiError::Unauthorized)?;
+    if !state.passwords.verify(&body.current_password, hash)? {
         tracing::warn!(user_id = %claims.sub, ip = %addr.ip(), event = "change_password_failed", reason = "wrong_current_password");
         return Err(ApiError::Unauthorized);
     }

@@ -15,6 +15,14 @@ use axum::{
 use domain::{JwtManager, PasswordService};
 use email::EmailClient;
 
+#[derive(Clone, Default)]
+pub struct OAuthConfig {
+    pub github_client_id: Option<String>,
+    pub github_client_secret: Option<String>,
+    pub google_client_id: Option<String>,
+    pub google_client_secret: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub pool: sqlx::PgPool,
@@ -23,6 +31,14 @@ pub struct AppState {
     pub redis: redis::Client,
     pub email: Arc<EmailClient>,
     pub app_base_url: String,
+    pub oauth: Arc<OAuthConfig>,
+    pub http: reqwest::Client,
+}
+
+fn oauth_routes() -> Router<AppState> {
+    Router::new()
+        .route("/auth/{provider}", get(routes::oauth::authorize))
+        .route("/auth/{provider}/callback", get(routes::oauth::callback))
 }
 
 /// Router without rate limiting — for integration tests.
@@ -44,6 +60,7 @@ pub fn build_router(state: AppState) -> Router {
             "/password-reset/confirm",
             post(routes::password_reset_confirm),
         )
+        .merge(oauth_routes())
         .with_state(state)
 }
 
@@ -73,5 +90,6 @@ pub fn build_production_router(state: AppState) -> Router {
             "/password-reset/confirm",
             post(routes::password_reset_confirm),
         )
+        .merge(oauth_routes())
         .with_state(state)
 }

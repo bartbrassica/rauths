@@ -43,6 +43,22 @@ impl<'a> TokenStore<'a> {
         Ok(val.and_then(|s| s.parse().ok()))
     }
 
+    pub async fn store_oauth_state(&self, state: &str, provider: &str) -> Result<(), DataError> {
+        let mut conn = self.client.get_multiplexed_async_connection().await?;
+        let key = format!("oauth_state:{state}");
+        let _: () = conn.set_ex(key, provider, 600u64).await?;
+        Ok(())
+    }
+
+    /// Atomically retrieves and deletes an OAuth state token. Returns the stored provider name,
+    /// or None if the state is unknown or expired.
+    pub async fn consume_oauth_state(&self, state: &str) -> Result<Option<String>, DataError> {
+        let mut conn = self.client.get_multiplexed_async_connection().await?;
+        let key = format!("oauth_state:{state}");
+        let provider: Option<String> = conn.get_del(key).await?;
+        Ok(provider)
+    }
+
     /// Revokes all active sessions for a user. Returns the number of sessions found in the index.
     pub async fn revoke_all_sessions(&self, user_id: Uuid) -> Result<usize, DataError> {
         let mut conn = self.client.get_multiplexed_async_connection().await?;
@@ -154,5 +170,34 @@ mod tests {
         let store = TokenStore::new(&client);
         let count = store.revoke_all_sessions(Uuid::new_v4()).await.unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn oauth_state_is_stored_and_consumed() {
+        let client = test_client();
+        let store = TokenStore::new(&client);
+        let state_token = Uuid::new_v4().to_string();
+
+        store
+            .store_oauth_state(&state_token, "github")
+            .await
+            .unwrap();
+
+        let provider = store.consume_oauth_state(&state_token).await.unwrap();
+        assert_eq!(provider, Some("github".to_string()));
+
+        let second_consume = store.consume_oauth_state(&state_token).await.unwrap();
+        assert!(second_consume.is_none(), "state must be one-time-use");
+    }
+
+    #[tokio::test]
+    async fn consume_unknown_oauth_state_returns_none() {
+        let client = test_client();
+        let store = TokenStore::new(&client);
+        let result = store
+            .consume_oauth_state(&Uuid::new_v4().to_string())
+            .await
+            .unwrap();
+        assert!(result.is_none());
     }
 }

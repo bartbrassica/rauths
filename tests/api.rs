@@ -4,7 +4,7 @@ use sqlx::PgPool;
 use tokio::net::TcpListener;
 
 use rustauth::{
-    AppState, build_router,
+    AppState, OAuthConfig, build_router,
     domain::{JwtManager, PasswordService},
     email::EmailClient,
 };
@@ -39,6 +39,8 @@ async fn spawn_app(pool: PgPool) -> String {
         redis,
         email: Arc::new(email),
         app_base_url: "http://app.test".to_string(),
+        oauth: Arc::new(OAuthConfig::default()),
+        http: reqwest::Client::new(),
     };
     let app = build_router(state);
 
