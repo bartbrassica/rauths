@@ -6,7 +6,7 @@ use tonic::transport::Server as TonicServer;
 use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 use rustauth::{
-    AppState, build_production_router,
+    AppState, OAuthConfig, build_production_router,
     domain::{JwtManager, PasswordService},
     email::EmailClient,
     services::{AuthServiceImpl, AuthServiceServer},
@@ -60,6 +60,13 @@ async fn main() -> anyhow::Result<()> {
     let passwords = Arc::new(PasswordService::new());
     let email = Arc::new(EmailClient::new(postmark_api_key, postmark_from_email));
 
+    let oauth = Arc::new(OAuthConfig {
+        github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
+        github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
+        google_client_id: std::env::var("GOOGLE_CLIENT_ID").ok(),
+        google_client_secret: std::env::var("GOOGLE_CLIENT_SECRET").ok(),
+    });
+
     let state = AppState {
         pool,
         jwt,
@@ -67,6 +74,8 @@ async fn main() -> anyhow::Result<()> {
         redis,
         email,
         app_base_url,
+        oauth,
+        http: reqwest::Client::new(),
     };
 
     let app = build_production_router(state.clone());

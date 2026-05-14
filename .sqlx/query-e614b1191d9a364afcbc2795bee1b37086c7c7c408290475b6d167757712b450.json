@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT * FROM users WHERE id = $1",
+  "query": "SELECT * FROM oauth_accounts WHERE provider = $1 AND provider_user_id = $2",
   "describe": {
     "columns": [
       {
@@ -10,37 +10,38 @@
       },
       {
         "ordinal": 1,
-        "name": "email",
-        "type_info": "Text"
+        "name": "user_id",
+        "type_info": "Uuid"
       },
       {
         "ordinal": 2,
-        "name": "password_hash",
+        "name": "provider",
         "type_info": "Text"
       },
       {
         "ordinal": 3,
-        "name": "created_at",
-        "type_info": "Timestamptz"
+        "name": "provider_user_id",
+        "type_info": "Text"
       },
       {
         "ordinal": 4,
-        "name": "updated_at",
+        "name": "created_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Text",
+        "Text"
       ]
     },
     "nullable": [
       false,
       false,
-      true,
+      false,
       false,
       false
     ]
   },
-  "hash": "843923b9a0257cf80f1dff554e7dc8fdfc05f489328e8376513124dfb42996e3"
+  "hash": "e614b1191d9a364afcbc2795bee1b37086c7c7c408290475b6d167757712b450"
 }
