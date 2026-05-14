@@ -13,7 +13,9 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    data::{DataError, LockoutStore, ResetTokenRepository, TokenStore, UserRepository},
+    data::{
+        DataError, LockoutStore, ResetTokenRepository, RoleRepository, TokenStore, UserRepository,
+    },
     domain::DomainError,
     middleware::AuthUser,
 };
@@ -175,7 +177,10 @@ pub async fn login(
 
     lockout.clear(&body.email).await?;
 
-    let access_token = state.jwt.sign_access_token(user.id, &user.email)?;
+    let roles = RoleRepository::new(&state.pool)
+        .list_for_user(user.id)
+        .await?;
+    let access_token = state.jwt.sign_access_token(user.id, &user.email, &roles)?;
     let (refresh_token, refresh_jti) = state.jwt.sign_refresh_token(user.id, &user.email)?;
 
     TokenStore::new(&state.redis)
@@ -226,7 +231,12 @@ pub async fn refresh(
             ApiError::Unauthorized
         })?;
 
-    let access_token = state.jwt.sign_access_token(claims.sub, &claims.email)?;
+    let roles = RoleRepository::new(&state.pool)
+        .list_for_user(claims.sub)
+        .await?;
+    let access_token = state
+        .jwt
+        .sign_access_token(claims.sub, &claims.email, &roles)?;
     let (refresh_token, new_jti) = state.jwt.sign_refresh_token(claims.sub, &claims.email)?;
 
     store

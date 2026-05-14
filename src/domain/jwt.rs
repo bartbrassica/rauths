@@ -25,6 +25,7 @@ pub struct Claims {
     pub jti: Uuid,
     /// Distinguishes access tokens from refresh tokens.
     pub kind: TokenKind,
+    pub roles: Vec<String>,
 }
 
 pub struct JwtManager {
@@ -44,9 +45,14 @@ impl JwtManager {
         })
     }
 
-    pub fn sign_access_token(&self, user_id: Uuid, email: &str) -> Result<String, DomainError> {
+    pub fn sign_access_token(
+        &self,
+        user_id: Uuid,
+        email: &str,
+        roles: &[String],
+    ) -> Result<String, DomainError> {
         let (token, _) =
-            self.sign_with_claims(user_id, email, self.access_ttl, TokenKind::Access)?;
+            self.sign_with_claims(user_id, email, roles, self.access_ttl, TokenKind::Access)?;
         Ok(token)
     }
 
@@ -57,7 +63,7 @@ impl JwtManager {
         email: &str,
     ) -> Result<(String, Uuid), DomainError> {
         let (token, claims) =
-            self.sign_with_claims(user_id, email, self.refresh_ttl, TokenKind::Refresh)?;
+            self.sign_with_claims(user_id, email, &[], self.refresh_ttl, TokenKind::Refresh)?;
         Ok((token, claims.jti))
     }
 
@@ -83,6 +89,7 @@ impl JwtManager {
         &self,
         user_id: Uuid,
         email: &str,
+        roles: &[String],
         ttl: Duration,
         kind: TokenKind,
     ) -> Result<(String, Claims), DomainError> {
@@ -94,6 +101,7 @@ impl JwtManager {
             exp: (now + ttl).timestamp(),
             jti: Uuid::new_v4(),
             kind,
+            roles: roles.to_vec(),
         };
         let token = encode(&Header::new(Algorithm::EdDSA), &claims, &self.encoding_key)?;
         Ok((token, claims))
@@ -120,11 +128,25 @@ MCowBQYDK2VwAyEADyia6fy2lW6Ezrs11/ZGt0axfBAfMSJu+rfdNbu62/Y=
     fn access_token_roundtrip() {
         let mgr = manager();
         let user_id = Uuid::new_v4();
-        let token = mgr.sign_access_token(user_id, "alice@example.com").unwrap();
+        let roles = vec!["admin".to_string(), "editor".to_string()];
+        let token = mgr
+            .sign_access_token(user_id, "alice@example.com", &roles)
+            .unwrap();
         let claims = mgr.verify_access(&token).unwrap();
         assert_eq!(claims.sub, user_id);
         assert_eq!(claims.email, "alice@example.com");
         assert_eq!(claims.kind, TokenKind::Access);
+        assert_eq!(claims.roles, roles);
+    }
+
+    #[test]
+    fn access_token_with_no_roles() {
+        let mgr = manager();
+        let token = mgr
+            .sign_access_token(Uuid::new_v4(), "alice@example.com", &[])
+            .unwrap();
+        let claims = mgr.verify_access(&token).unwrap();
+        assert!(claims.roles.is_empty());
     }
 
     #[test]
@@ -142,7 +164,7 @@ MCowBQYDK2VwAyEADyia6fy2lW6Ezrs11/ZGt0axfBAfMSJu+rfdNbu62/Y=
     fn access_token_rejected_as_refresh() {
         let mgr = manager();
         let token = mgr
-            .sign_access_token(Uuid::new_v4(), "alice@example.com")
+            .sign_access_token(Uuid::new_v4(), "alice@example.com", &[])
             .unwrap();
         assert!(matches!(
             mgr.verify_refresh(&token),
@@ -166,7 +188,9 @@ MCowBQYDK2VwAyEADyia6fy2lW6Ezrs11/ZGt0axfBAfMSJu+rfdNbu62/Y=
     fn tampered_token_is_rejected() {
         let mgr = manager();
         let user_id = Uuid::new_v4();
-        let mut token = mgr.sign_access_token(user_id, "eve@example.com").unwrap();
+        let mut token = mgr
+            .sign_access_token(user_id, "eve@example.com", &[])
+            .unwrap();
         let last = token.pop().unwrap();
         token.push(if last == 'A' { 'B' } else { 'A' });
         assert!(mgr.verify_access(&token).is_err());
@@ -176,8 +200,12 @@ MCowBQYDK2VwAyEADyia6fy2lW6Ezrs11/ZGt0axfBAfMSJu+rfdNbu62/Y=
     fn each_token_has_unique_jti() {
         let mgr = manager();
         let user_id = Uuid::new_v4();
-        let t1 = mgr.sign_access_token(user_id, "x@example.com").unwrap();
-        let t2 = mgr.sign_access_token(user_id, "x@example.com").unwrap();
+        let t1 = mgr
+            .sign_access_token(user_id, "x@example.com", &[])
+            .unwrap();
+        let t2 = mgr
+            .sign_access_token(user_id, "x@example.com", &[])
+            .unwrap();
         let c1 = mgr.verify_access(&t1).unwrap();
         let c2 = mgr.verify_access(&t2).unwrap();
         assert_ne!(c1.jti, c2.jti);
