@@ -33,7 +33,7 @@ impl AuthService for AuthServiceImpl {
                 valid: true,
                 user_id: claims.sub.to_string(),
                 email: claims.email,
-                roles: vec![],
+                roles: claims.roles,
             })),
             Err(_) => Ok(Response::new(VerifyTokenResponse {
                 valid: false,

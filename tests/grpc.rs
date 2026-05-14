@@ -49,7 +49,9 @@ fn test_jwt() -> Arc<JwtManager> {
 async fn verify_valid_access_token_returns_valid_with_claims() {
     let jwt = test_jwt();
     let user_id = Uuid::new_v4();
-    let token = jwt.sign_access_token(user_id, "alice@example.com").unwrap();
+    let token = jwt
+        .sign_access_token(user_id, "alice@example.com", &[])
+        .unwrap();
 
     let mut client = spawn_grpc(jwt).await;
     let resp = client
@@ -61,6 +63,27 @@ async fn verify_valid_access_token_returns_valid_with_claims() {
     assert!(resp.valid);
     assert_eq!(resp.user_id, user_id.to_string());
     assert_eq!(resp.email, "alice@example.com");
+    assert!(resp.roles.is_empty());
+}
+
+#[tokio::test]
+async fn verify_token_returns_roles_from_claims() {
+    let jwt = test_jwt();
+    let user_id = Uuid::new_v4();
+    let roles = vec!["admin".to_string(), "editor".to_string()];
+    let token = jwt
+        .sign_access_token(user_id, "alice@example.com", &roles)
+        .unwrap();
+
+    let mut client = spawn_grpc(jwt).await;
+    let resp = client
+        .verify_token(VerifyTokenRequest { token })
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(resp.valid);
+    assert_eq!(resp.roles, roles);
 }
 
 #[tokio::test]
@@ -86,7 +109,7 @@ async fn verify_refresh_token_returns_invalid() {
 async fn verify_tampered_token_returns_invalid() {
     let jwt = test_jwt();
     let mut token = jwt
-        .sign_access_token(Uuid::new_v4(), "eve@example.com")
+        .sign_access_token(Uuid::new_v4(), "eve@example.com", &[])
         .unwrap();
     let last = token.pop().unwrap();
     token.push(if last == 'A' { 'B' } else { 'A' });
