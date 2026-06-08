@@ -17,8 +17,8 @@ use super::{ApiError, LoginResponse};
 struct ProviderConfig<'a> {
     client_id: &'a str,
     client_secret: &'a str,
-    auth_url: &'static str,
-    token_url: &'static str,
+    auth_url: &'a str,
+    token_url: &'a str,
     scope: &'static str,
 }
 
@@ -38,8 +38,16 @@ fn provider_config<'a>(
                 .github_client_secret
                 .as_deref()
                 .ok_or(ApiError::Internal)?,
-            auth_url: "https://github.com/login/oauth/authorize",
-            token_url: "https://github.com/login/oauth/access_token",
+            auth_url: state
+                .oauth
+                .github_auth_url
+                .as_deref()
+                .unwrap_or("https://github.com/login/oauth/authorize"),
+            token_url: state
+                .oauth
+                .github_token_url
+                .as_deref()
+                .unwrap_or("https://github.com/login/oauth/access_token"),
             scope: "user:email",
         }),
         "google" => Ok(ProviderConfig {
@@ -53,8 +61,16 @@ fn provider_config<'a>(
                 .google_client_secret
                 .as_deref()
                 .ok_or(ApiError::Internal)?,
-            auth_url: "https://accounts.google.com/o/oauth2/v2/auth",
-            token_url: "https://oauth2.googleapis.com/token",
+            auth_url: state
+                .oauth
+                .google_auth_url
+                .as_deref()
+                .unwrap_or("https://accounts.google.com/o/oauth2/v2/auth"),
+            token_url: state
+                .oauth
+                .google_token_url
+                .as_deref()
+                .unwrap_or("https://oauth2.googleapis.com/token"),
             scope: "openid email",
         }),
         _ => Err(ApiError::Validation("unsupported provider".into())),
@@ -138,8 +154,22 @@ pub async fn callback(
     let access_token = exchange_code(&state.http, &config, &code, &redirect_uri).await?;
 
     let (provider_user_id, email) = match provider.as_str() {
-        "github" => fetch_github_user(&state.http, &access_token).await?,
-        "google" => fetch_google_user(&state.http, &access_token).await?,
+        "github" => {
+            let api_base = state
+                .oauth
+                .github_api_base_url
+                .as_deref()
+                .unwrap_or("https://api.github.com");
+            fetch_github_user(&state.http, &access_token, api_base).await?
+        }
+        "google" => {
+            let userinfo_url = state
+                .oauth
+                .google_userinfo_url
+                .as_deref()
+                .unwrap_or("https://www.googleapis.com/oauth2/v3/userinfo");
+            fetch_google_user(&state.http, &access_token, userinfo_url).await?
+        }
         _ => return Err(ApiError::Validation("unsupported provider".into())),
     };
 
@@ -261,9 +291,10 @@ struct GithubEmail {
 async fn fetch_github_user(
     http: &reqwest::Client,
     token: &str,
+    api_base: &str,
 ) -> Result<(String, String), ApiError> {
     let user: GithubUser = http
-        .get("https://api.github.com/user")
+        .get(format!("{api_base}/user"))
         .bearer_auth(token)
         .header("User-Agent", "rustauth")
         .send()
@@ -277,7 +308,7 @@ async fn fetch_github_user(
         e
     } else {
         let emails: Vec<GithubEmail> = http
-            .get("https://api.github.com/user/emails")
+            .get(format!("{api_base}/user/emails"))
             .bearer_auth(token)
             .header("User-Agent", "rustauth")
             .send()
@@ -309,9 +340,10 @@ struct GoogleUser {
 async fn fetch_google_user(
     http: &reqwest::Client,
     token: &str,
+    userinfo_url: &str,
 ) -> Result<(String, String), ApiError> {
     let user: GoogleUser = http
-        .get("https://www.googleapis.com/oauth2/v3/userinfo")
+        .get(userinfo_url)
         .bearer_auth(token)
         .send()
         .await

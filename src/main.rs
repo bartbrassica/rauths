@@ -65,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
         github_client_secret: std::env::var("GITHUB_CLIENT_SECRET").ok(),
         google_client_id: std::env::var("GOOGLE_CLIENT_ID").ok(),
         google_client_secret: std::env::var("GOOGLE_CLIENT_SECRET").ok(),
+        ..Default::default()
     });
 
     let state = AppState {

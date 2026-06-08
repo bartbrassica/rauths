@@ -21,6 +21,15 @@ pub struct OAuthConfig {
     pub github_client_secret: Option<String>,
     pub google_client_id: Option<String>,
     pub google_client_secret: Option<String>,
+
+    /// Overrides for provider endpoint URLs, used by tests to redirect calls
+    /// to a local mock server instead of the real provider.
+    pub github_auth_url: Option<String>,
+    pub github_token_url: Option<String>,
+    pub github_api_base_url: Option<String>,
+    pub google_auth_url: Option<String>,
+    pub google_token_url: Option<String>,
+    pub google_userinfo_url: Option<String>,
 }
 
 #[derive(Clone)]
