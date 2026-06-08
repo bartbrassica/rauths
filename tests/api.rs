@@ -165,6 +165,45 @@ async fn login_with_valid_credentials_returns_tokens(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn login_persists_audit_events_for_success_and_failure(pool: PgPool) {
+    let (base, captured) = spawn_app(pool.clone()).await;
+    let client = reqwest::Client::new();
+
+    register_and_verify(&base, &client, &captured, "alice@example.com", "hunter2!").await;
+
+    client
+        .post(format!("{base}/login"))
+        .json(&serde_json::json!({"email": "alice@example.com", "password": "wrongpass"}))
+        .send()
+        .await
+        .unwrap();
+    client
+        .post(format!("{base}/login"))
+        .json(&serde_json::json!({"email": "alice@example.com", "password": "hunter2!"}))
+        .send()
+        .await
+        .unwrap();
+
+    let events = sqlx::query!(
+        "SELECT user_id, event, reason, ip FROM audit_events \
+         WHERE event IN ('login_failed', 'login_success') ORDER BY created_at"
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].event, "login_failed");
+    assert_eq!(events[0].reason.as_deref(), Some("invalid_password"));
+    assert_eq!(events[1].event, "login_success");
+    assert_eq!(events[1].reason, None);
+    for e in &events {
+        assert!(e.user_id.is_some());
+        assert!(e.ip.is_some());
+    }
+}
+
+#[sqlx::test]
 async fn login_with_wrong_password_returns_401(pool: PgPool) {
     let (base, _captured) = spawn_app(pool).await;
     let client = reqwest::Client::new();

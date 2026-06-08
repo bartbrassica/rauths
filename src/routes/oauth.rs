@@ -1,6 +1,8 @@
+use std::net::SocketAddr;
+
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::RngCore;
@@ -135,6 +137,7 @@ pub struct CallbackQuery {
 pub async fn callback(
     Path(provider): Path<String>,
     Query(query): Query<CallbackQuery>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
 ) -> Result<Json<LoginResponse>, ApiError> {
     if query.error.is_some() {
@@ -206,6 +209,14 @@ pub async fn callback(
                     event = "oauth_account_reclaimed"
                 );
                 super::record_auth_event("oauth_account_reclaimed", provider.clone());
+                super::audit(
+                    &state,
+                    Some(existing.id),
+                    "oauth_account_reclaimed",
+                    Some(provider.as_str()),
+                    addr.ip(),
+                )
+                .await;
                 existing
             }
             Some(existing) => existing,
@@ -237,6 +248,14 @@ pub async fn callback(
         event = "oauth_login_success"
     );
     super::record_auth_event("oauth_login_success", provider.clone());
+    super::audit(
+        &state,
+        Some(user_id),
+        "oauth_login_success",
+        Some(provider.as_str()),
+        addr.ip(),
+    )
+    .await;
 
     Ok(Json(LoginResponse {
         access_token: access_token_jwt,
