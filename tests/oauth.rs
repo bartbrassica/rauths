@@ -254,6 +254,8 @@ async fn authorize_returns_authorization_url_for_github(pool: PgPool) {
         "http://app.test/auth/github/callback"
     );
     assert!(!pairs["state"].is_empty());
+    assert_eq!(pairs["code_challenge_method"], "S256");
+    assert!(!pairs["code_challenge"].is_empty());
 }
 
 #[sqlx::test]
