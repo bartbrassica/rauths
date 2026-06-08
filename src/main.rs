@@ -34,8 +34,8 @@ async fn main() -> anyhow::Result<()> {
     let redis_url = std::env::var("REDIS_URL")?;
     let jwt_private_pem = std::env::var("JWT_PRIVATE_KEY_PEM")?;
     let jwt_public_pem = std::env::var("JWT_PUBLIC_KEY_PEM")?;
-    let postmark_api_key = std::env::var("POSTMARK_API_KEY")?;
-    let postmark_from_email = std::env::var("POSTMARK_FROM_EMAIL")?;
+    let resend_api_key = std::env::var("RESEND_API_KEY")?;
+    let resend_from_email = std::env::var("RESEND_FROM_EMAIL")?;
     let app_base_url = std::env::var("APP_BASE_URL")?;
     let http_addr = std::env::var("HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
     let grpc_addr: SocketAddr = std::env::var("GRPC_ADDR")
@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
     )?);
 
     let passwords = Arc::new(PasswordService::new());
-    let email = Arc::new(EmailClient::new(postmark_api_key, postmark_from_email));
+    let email = Arc::new(EmailClient::new(resend_api_key, resend_from_email));
 
     let oauth = Arc::new(OAuthConfig {
         github_client_id: std::env::var("GITHUB_CLIENT_ID").ok(),
