@@ -1,6 +1,6 @@
 use std::{
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 use sqlx::PgPool;
@@ -9,7 +9,7 @@ use tokio::net::TcpListener;
 use rustauth::{
     AppState, OAuthConfig, build_router,
     domain::{JwtManager, PasswordService},
-    email::EmailClient,
+    email::{CapturedEmails, EmailClient},
 };
 use uuid::Uuid;
 
@@ -24,7 +24,7 @@ MCowBQYDK2VwAyEADyia6fy2lW6Ezrs11/ZGt0axfBAfMSJu+rfdNbu62/Y=
 
 /// Builds the app with a test DB, connects to Redis, and binds to a random
 /// port. Returns the base URL. The server runs for the lifetime of the test.
-async fn spawn_app(pool: PgPool) -> (String, Arc<Mutex<Vec<(String, String)>>>) {
+async fn spawn_app(pool: PgPool) -> (String, CapturedEmails) {
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let redis = redis::Client::open(redis_url).expect("valid redis url");
 
@@ -71,7 +71,7 @@ fn extract_token(link: &str) -> &str {
 async fn register_and_verify(
     base: &str,
     client: &reqwest::Client,
-    captured: &Arc<Mutex<Vec<(String, String)>>>,
+    captured: &CapturedEmails,
     email: &str,
     password: &str,
 ) {
@@ -545,7 +545,7 @@ async fn logout_with_empty_token_returns_422(pool: PgPool) {
 async fn register_and_login(
     base: &str,
     client: &reqwest::Client,
-    captured: &Arc<Mutex<Vec<(String, String)>>>,
+    captured: &CapturedEmails,
 ) -> serde_json::Value {
     register_and_verify(base, client, captured, "alice@example.com", "hunter2!").await;
     client

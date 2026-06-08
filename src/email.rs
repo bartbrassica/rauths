@@ -6,13 +6,16 @@ pub struct EmailClient {
     inner: Inner,
 }
 
+/// `(to, link)` pairs captured instead of being sent, for use in tests.
+pub type CapturedEmails = Arc<Mutex<Vec<(String, String)>>>;
+
 enum Inner {
     Resend {
         api_key: String,
         from_email: String,
         http: reqwest::Client,
     },
-    Capture(Arc<Mutex<Vec<(String, String)>>>),
+    Capture(CapturedEmails),
 }
 
 impl EmailClient {
@@ -28,7 +31,7 @@ impl EmailClient {
 
     /// Returns a client that stores `(to, link)` pairs instead of sending them.
     /// Used in tests to inspect outgoing emails without a real Resend account.
-    pub fn capturing() -> (Self, Arc<Mutex<Vec<(String, String)>>>) {
+    pub fn capturing() -> (Self, CapturedEmails) {
         let sent = Arc::new(Mutex::new(Vec::new()));
         (
             Self {
