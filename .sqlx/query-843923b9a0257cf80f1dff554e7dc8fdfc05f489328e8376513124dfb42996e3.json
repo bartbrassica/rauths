@@ -27,6 +27,11 @@
         "ordinal": 4,
         "name": "updated_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "email_verified_at",
+        "type_info": "Timestamptz"
       }
     ],
     "parameters": {
@@ -39,7 +44,8 @@
       false,
       true,
       false,
-      false
+      false,
+      true
     ]
   },
   "hash": "843923b9a0257cf80f1dff554e7dc8fdfc05f489328e8376513124dfb42996e3"

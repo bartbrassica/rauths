@@ -16,13 +16,17 @@ use uuid::Uuid;
 use crate::{
     AppState,
     data::{
-        DataError, LockoutStore, ResetTokenRepository, RoleRepository, TokenStore, UserRepository,
+        DataError, EmailVerificationTokenRepository, LockoutStore, ResetTokenRepository,
+        RoleRepository, TokenStore, UserRepository,
     },
     domain::DomainError,
     middleware::AuthUser,
 };
 
-fn generate_reset_token() -> (String, String) {
+/// Generates a random token paired with its SHA-256 hash for storage.
+/// The raw token is sent to the user; only the hash is persisted, so a
+/// database leak doesn't expose usable tokens.
+fn generate_secure_token() -> (String, String) {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     let raw = hex::encode(bytes);
@@ -109,6 +113,21 @@ pub async fn register(
         ApiError::from(e)
     })?;
     tracing::info!(email = %user.email, user_id = %user.id, ip = %addr.ip(), event = "register_success");
+
+    let (raw_token, token_hash) = generate_secure_token();
+    let expires_at = chrono::Utc::now() + chrono::Duration::seconds(900);
+    EmailVerificationTokenRepository::new(&state.pool)
+        .create(user.id, &token_hash, expires_at)
+        .await?;
+    let verify_link = format!("{}/verify-email?token={}", state.app_base_url, raw_token);
+    if let Err(e) = state
+        .email
+        .send_verification_email(&user.email, &verify_link)
+        .await
+    {
+        tracing::error!(user_id = %user.id, error = %e, event = "verification_email_failed");
+    }
+
     Ok((
         StatusCode::CREATED,
         Json(RegisterResponse {
@@ -179,6 +198,13 @@ pub async fn login(
     }
 
     lockout.clear(&body.email).await?;
+
+    // Checked only after the password is confirmed correct, so an attacker
+    // probing emails can't use this to learn whether an account is unverified.
+    if user.email_verified_at.is_none() {
+        tracing::warn!(email = %body.email, ip = %addr.ip(), event = "login_failed", reason = "email_not_verified");
+        return Err(ApiError::EmailNotVerified);
+    }
 
     let roles = RoleRepository::new(&state.pool)
         .list_for_user(user.id)
@@ -434,7 +460,7 @@ pub async fn password_reset_request(
 
     let repo = UserRepository::new(&state.pool);
     if let Some(user) = repo.find_by_email(&body.email).await? {
-        let (raw_token, token_hash) = generate_reset_token();
+        let (raw_token, token_hash) = generate_secure_token();
         let expires_at = chrono::Utc::now() + chrono::Duration::seconds(900);
 
         ResetTokenRepository::new(&state.pool)
@@ -500,12 +526,97 @@ pub async fn password_reset_confirm(
     Ok(StatusCode::OK)
 }
 
+// --- /email-verify/request ---
+
+#[derive(Deserialize)]
+pub struct EmailVerifyRequestBody {
+    pub email: String,
+}
+
+impl EmailVerifyRequestBody {
+    fn validate(&self) -> Result<(), ApiError> {
+        validate_email(&self.email)?;
+        Ok(())
+    }
+}
+
+pub async fn email_verify_request(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<AppState>,
+    Json(body): Json<EmailVerifyRequestBody>,
+) -> Result<StatusCode, ApiError> {
+    body.validate()?;
+
+    let repo = UserRepository::new(&state.pool);
+    if let Some(user) = repo.find_by_email(&body.email).await?
+        && user.email_verified_at.is_none()
+    {
+        let (raw_token, token_hash) = generate_secure_token();
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(900);
+
+        EmailVerificationTokenRepository::new(&state.pool)
+            .create(user.id, &token_hash, expires_at)
+            .await?;
+
+        let verify_link = format!("{}/verify-email?token={}", state.app_base_url, raw_token);
+        if let Err(e) = state
+            .email
+            .send_verification_email(&user.email, &verify_link)
+            .await
+        {
+            tracing::error!(user_id = %user.id, error = %e, event = "verification_email_failed");
+        } else {
+            tracing::info!(user_id = %user.id, ip = %addr.ip(), event = "verification_requested");
+        }
+    }
+
+    Ok(StatusCode::OK)
+}
+
+// --- /email-verify/confirm ---
+
+#[derive(Deserialize)]
+pub struct EmailVerifyConfirmBody {
+    pub token: String,
+}
+
+impl EmailVerifyConfirmBody {
+    fn validate(&self) -> Result<(), ApiError> {
+        if self.token.is_empty() {
+            return Err(ApiError::Validation("token is required".into()));
+        }
+        Ok(())
+    }
+}
+
+pub async fn email_verify_confirm(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<AppState>,
+    Json(body): Json<EmailVerifyConfirmBody>,
+) -> Result<StatusCode, ApiError> {
+    body.validate()?;
+
+    let token_hash = hex::encode(Sha256::digest(body.token.as_bytes()));
+    let user_id = EmailVerificationTokenRepository::new(&state.pool)
+        .consume(&token_hash)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("invalid or expired verification token".into()))?;
+
+    UserRepository::new(&state.pool)
+        .mark_verified(user_id)
+        .await?;
+
+    tracing::info!(user_id = %user_id, ip = %addr.ip(), event = "email_verified");
+    Ok(StatusCode::OK)
+}
+
 // --- Error type ---
 
 pub enum ApiError {
     BadRequest(String),
     Conflict,
     Unauthorized,
+    EmailNotVerified,
     Validation(String),
     Internal,
 }
@@ -534,6 +645,7 @@ impl IntoResponse for ApiError {
             Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg).into_response(),
             Self::Conflict => (StatusCode::CONFLICT, "email already registered").into_response(),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid credentials").into_response(),
+            Self::EmailNotVerified => (StatusCode::FORBIDDEN, "email not verified").into_response(),
             Self::Validation(msg) => (StatusCode::UNPROCESSABLE_ENTITY, msg).into_response(),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
         }

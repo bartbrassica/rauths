@@ -62,6 +62,47 @@ fn extract_token(reset_link: &str) -> &str {
     reset_link.split("token=").nth(1).expect("token= in link")
 }
 
+/// Registration sends a verification email, so captured emails for an
+/// account under test may contain both verification and reset-password
+/// links. Finds the most recent link whose path matches `path_fragment`.
+fn find_link(emails: &[(String, String)], path_fragment: &str) -> String {
+    emails
+        .iter()
+        .rev()
+        .find(|(_, link)| link.contains(path_fragment))
+        .expect("expected a captured link matching the given path")
+        .1
+        .clone()
+}
+
+/// Registers a user, then verifies the email using the captured verification
+/// link, so the account can subsequently log in.
+async fn register_and_verify(
+    base: &str,
+    client: &reqwest::Client,
+    captured: &Arc<Mutex<Vec<(String, String)>>>,
+    email: &str,
+    password: &str,
+) {
+    client
+        .post(format!("{base}/register"))
+        .json(&serde_json::json!({"email": email, "password": password}))
+        .send()
+        .await
+        .unwrap();
+
+    let link = find_link(&captured.lock().unwrap(), "/verify-email");
+    let token = extract_token(&link).to_string();
+
+    let res = client
+        .post(format!("{base}/email-verify/confirm"))
+        .json(&serde_json::json!({"token": token}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+}
+
 // --- /password-reset/request ---
 
 #[sqlx::test]
@@ -119,10 +160,15 @@ async fn request_sends_email_with_reset_link(pool: PgPool) {
         .await
         .unwrap();
 
+    // One email from registration (verification) and one from the reset request.
     let emails = captured.lock().unwrap();
-    assert_eq!(emails.len(), 1);
-    assert_eq!(emails[0].0, "alice@example.com");
-    assert!(emails[0].1.contains("token="));
+    assert_eq!(emails.len(), 2);
+    let (to, link) = emails
+        .iter()
+        .find(|(_, link)| link.contains("/reset-password"))
+        .expect("reset email sent");
+    assert_eq!(to, "alice@example.com");
+    assert!(link.contains("token="));
 }
 
 #[sqlx::test]
@@ -160,12 +206,7 @@ async fn confirm_resets_password_and_allows_login_with_new(pool: PgPool) {
     let (base, captured) = spawn_app(pool).await;
     let client = reqwest::Client::new();
 
-    client
-        .post(format!("{base}/register"))
-        .json(&serde_json::json!({"email": "alice@example.com", "password": "hunter2!"}))
-        .send()
-        .await
-        .unwrap();
+    register_and_verify(&base, &client, &captured, "alice@example.com", "hunter2!").await;
 
     client
         .post(format!("{base}/password-reset/request"))
@@ -174,9 +215,8 @@ async fn confirm_resets_password_and_allows_login_with_new(pool: PgPool) {
         .await
         .unwrap();
 
-    let emails = captured.lock().unwrap();
-    let token = extract_token(&emails[0].1).to_string();
-    drop(emails);
+    let link = find_link(&captured.lock().unwrap(), "/reset-password");
+    let token = extract_token(&link).to_string();
 
     let res = client
         .post(format!("{base}/password-reset/confirm"))
@@ -208,12 +248,7 @@ async fn confirm_revokes_all_existing_sessions(pool: PgPool) {
     let (base, captured) = spawn_app(pool).await;
     let client = reqwest::Client::new();
 
-    client
-        .post(format!("{base}/register"))
-        .json(&serde_json::json!({"email": "alice@example.com", "password": "hunter2!"}))
-        .send()
-        .await
-        .unwrap();
+    register_and_verify(&base, &client, &captured, "alice@example.com", "hunter2!").await;
 
     let login: serde_json::Value = client
         .post(format!("{base}/login"))
@@ -232,9 +267,8 @@ async fn confirm_revokes_all_existing_sessions(pool: PgPool) {
         .await
         .unwrap();
 
-    let emails = captured.lock().unwrap();
-    let token = extract_token(&emails[0].1).to_string();
-    drop(emails);
+    let link = find_link(&captured.lock().unwrap(), "/reset-password");
+    let token = extract_token(&link).to_string();
 
     client
         .post(format!("{base}/password-reset/confirm"))
@@ -271,9 +305,8 @@ async fn confirm_token_is_single_use(pool: PgPool) {
         .await
         .unwrap();
 
-    let emails = captured.lock().unwrap();
-    let token = extract_token(&emails[0].1).to_string();
-    drop(emails);
+    let link = find_link(&captured.lock().unwrap(), "/reset-password");
+    let token = extract_token(&link).to_string();
 
     client
         .post(format!("{base}/password-reset/confirm"))

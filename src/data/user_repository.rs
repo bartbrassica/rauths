@@ -9,6 +9,7 @@ pub struct User {
     pub id: Uuid,
     pub email: String,
     pub password_hash: Option<String>,
+    pub email_verified_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -63,15 +64,41 @@ impl<'a> UserRepository<'a> {
         Ok(())
     }
 
+    /// Creates a user from an OAuth provider login. The provider has already proven
+    /// ownership of the email, so the account starts out verified.
     pub async fn create_oauth_user(&self, email: &str) -> Result<User, DataError> {
         sqlx::query_as!(
             User,
-            "INSERT INTO users (email) VALUES ($1) RETURNING *",
+            "INSERT INTO users (email, email_verified_at) VALUES ($1, NOW()) RETURNING *",
             email,
         )
         .fetch_one(self.pool)
         .await
         .map_err(DataError::from_sqlx)
+    }
+
+    pub async fn mark_verified(&self, id: Uuid) -> Result<(), DataError> {
+        sqlx::query!(
+            "UPDATE users SET email_verified_at = NOW(), updated_at = NOW() WHERE id = $1",
+            id
+        )
+        .execute(self.pool)
+        .await
+        .map_err(DataError::from_sqlx)?;
+        Ok(())
+    }
+
+    /// Clears the password hash, e.g. when an OAuth login reclaims an account that
+    /// was squatting on its email — the squatter's password must no longer work.
+    pub async fn clear_password(&self, id: Uuid) -> Result<(), DataError> {
+        sqlx::query!(
+            "UPDATE users SET password_hash = NULL, updated_at = NOW() WHERE id = $1",
+            id
+        )
+        .execute(self.pool)
+        .await
+        .map_err(DataError::from_sqlx)?;
+        Ok(())
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<(), DataError> {
