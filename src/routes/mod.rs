@@ -5,8 +5,8 @@ use std::net::SocketAddr;
 use axum::{
     Json,
     extract::{ConnectInfo, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
+    http::{StatusCode, header},
+    response::{Html, IntoResponse, Response},
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -528,6 +528,38 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
             redis: if redis_ok { "ok" } else { "error" },
         }),
     )
+}
+
+// --- /openapi.yaml & /docs ---
+
+const OPENAPI_SPEC: &str = include_str!("../../openapi.yaml");
+
+const SWAGGER_UI_HTML: &str = r##"<!DOCTYPE html>
+<html>
+  <head>
+    <title>rauths API docs</title>
+    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css" />
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+    <script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js"></script>
+    <script>
+      window.onload = () => {
+        window.ui = SwaggerUIBundle({
+          url: "/openapi.yaml",
+          dom_id: "#swagger-ui",
+        });
+      };
+    </script>
+  </body>
+</html>"##;
+
+pub async fn openapi_spec() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "application/yaml")], OPENAPI_SPEC)
+}
+
+pub async fn docs() -> impl IntoResponse {
+    Html(SWAGGER_UI_HTML)
 }
 
 // --- POST /me/sessions/revoke-all ---

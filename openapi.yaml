@@ -1,0 +1,588 @@
+openapi: 3.0.3
+info:
+  title: rauths
+  description: Authentication and account-management API — registration, login, token refresh, password/email-verification flows, and OAuth (GitHub/Google) login.
+  version: 0.1.0
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: /
+
+tags:
+  - name: Auth
+    description: Registration, login, token refresh and logout
+  - name: Account
+    description: Authenticated account management
+  - name: Password Reset
+    description: Forgot/reset password flow
+  - name: Email Verification
+    description: Email ownership verification flow
+  - name: OAuth
+    description: Social login via external providers
+  - name: System
+    description: Health and metrics
+
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Liveness/readiness check
+      description: Reports whether the database and Redis connections are reachable. No authentication required.
+      operationId: health
+      responses:
+        "200":
+          description: All dependencies are healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: One or more dependencies are unreachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /register:
+    post:
+      tags: [Auth]
+      summary: Create an account
+      description: Creates a new user with an email/password and sends a verification email. The account cannot log in until the email is verified.
+      operationId: register
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegisterResponse"
+        "409":
+          description: Email already registered
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /login:
+    post:
+      tags: [Auth]
+      summary: Log in with email and password
+      description: Returns a short-lived access token and a long-lived refresh token. Fails if the account is locked out, has no password (OAuth-only), or the email is not verified.
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Email has not been verified yet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /refresh:
+    post:
+      tags: [Auth]
+      summary: Exchange a refresh token for a new token pair
+      description: Rotates the refresh token — the old one is revoked and a new access/refresh pair is issued.
+      operationId: refresh
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: New token pair issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "401":
+          description: Refresh token is invalid, expired, or already revoked
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /logout:
+    post:
+      tags: [Auth]
+      summary: Log out the current session
+      description: Revokes the given refresh token and blocks the bearer access token for the remainder of its lifetime.
+      operationId: logout
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogoutRequest"
+      responses:
+        "204":
+          description: Logged out
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /me:
+    get:
+      tags: [Account]
+      summary: Get the current user
+      operationId: getMe
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    delete:
+      tags: [Account]
+      summary: Delete the current account
+      description: Permanently deletes the authenticated user's account.
+      operationId: deleteMe
+      security:
+        - BearerAuth: []
+      responses:
+        "204":
+          description: Account deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /me/password:
+    patch:
+      tags: [Account]
+      summary: Change the current user's password
+      description: Requires the current password. Verifying it against an OAuth-only account (no password set) returns 401.
+      operationId: changePassword
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordRequest"
+      responses:
+        "204":
+          description: Password changed
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /me/sessions/revoke-all:
+    post:
+      tags: [Account]
+      summary: Revoke all active sessions
+      description: Revokes every outstanding refresh token for the current user, effectively logging them out everywhere.
+      operationId: revokeAllSessions
+      security:
+        - BearerAuth: []
+      responses:
+        "204":
+          description: Sessions revoked
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /password-reset/request:
+    post:
+      tags: [Password Reset]
+      summary: Request a password reset email
+      description: Always returns 200 regardless of whether the email is registered, to avoid leaking account existence. If the account exists, a reset link is emailed.
+      operationId: requestPasswordReset
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetRequestBody"
+      responses:
+        "200":
+          description: Request accepted (email sent if the account exists)
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /password-reset/confirm:
+    post:
+      tags: [Password Reset]
+      summary: Complete a password reset
+      description: Consumes a one-time reset token, sets the new password, and revokes all of the user's active sessions.
+      operationId: confirmPasswordReset
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetConfirmBody"
+      responses:
+        "200":
+          description: Password reset
+        "400":
+          description: Invalid or expired reset token
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /email-verify/request:
+    post:
+      tags: [Email Verification]
+      summary: Request an email-verification email
+      description: Always returns 200 regardless of whether the email is registered or already verified, to avoid leaking account state. A verification link is emailed only for unverified accounts.
+      operationId: requestEmailVerification
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailVerifyRequestBody"
+      responses:
+        "200":
+          description: Request accepted (email sent if applicable)
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /email-verify/confirm:
+    post:
+      tags: [Email Verification]
+      summary: Confirm an email address
+      description: Consumes a one-time verification token and marks the associated account's email as verified.
+      operationId: confirmEmailVerification
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailVerifyConfirmBody"
+      responses:
+        "200":
+          description: Email verified
+        "400":
+          description: Invalid or expired verification token
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /auth/{provider}:
+    get:
+      tags: [OAuth]
+      summary: Start an OAuth login
+      description: Returns the provider's authorization URL (with PKCE challenge) to redirect the user to. The flow's state and code verifier are stored server-side, keyed by an opaque `state` value.
+      operationId: oauthAuthorize
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Provider"
+      responses:
+        "200":
+          description: Authorization URL to redirect the user to
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthorizeResponse"
+        "422":
+          description: Unsupported provider
+          $ref: "#/components/responses/ValidationError"
+
+  /auth/{provider}/callback:
+    get:
+      tags: [OAuth]
+      summary: OAuth provider callback
+      description: |
+        The provider redirects here after the user authorizes (or denies) the
+        request. Exchanges the authorization code for the provider's access
+        token, fetches the user's profile, links or creates a local account,
+        and returns a token pair — exactly like `/login`.
+
+        If an existing unverified account is found with a matching email, it
+        is reclaimed for the verified provider identity and its password is
+        cleared.
+      operationId: oauthCallback
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Provider"
+        - name: code
+          in: query
+          description: Authorization code issued by the provider. Absent if the user denied access.
+          schema:
+            type: string
+        - name: state
+          in: query
+          description: Opaque state value returned from `/auth/{provider}`, used to look up the stored PKCE verifier.
+          schema:
+            type: string
+        - name: error
+          in: query
+          description: Set by the provider when the user denies authorization.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Authenticated via the provider
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "400":
+          description: Authorization denied, missing/invalid `code` or `state`, or a provider/state mismatch
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          description: Unsupported provider
+          $ref: "#/components/responses/ValidationError"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "Access token returned by `/login`, `/refresh`, or an OAuth callback. Send as `Authorization: Bearer <token>`."
+
+  parameters:
+    Provider:
+      name: provider
+      in: path
+      required: true
+      description: OAuth provider identifier.
+      schema:
+        type: string
+        enum: [github, google]
+
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        db:
+          type: string
+          enum: [ok, error]
+        redis:
+          type: string
+          enum: [ok, error]
+      required: [db, redis]
+
+    RegisterRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        password:
+          type: string
+          description: Must be 8–128 characters.
+          minLength: 8
+          maxLength: 128
+          format: password
+      required: [email, password]
+
+    RegisterResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+      required: [id, email]
+
+    LoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          maxLength: 128
+      required: [email, password]
+
+    LoginResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: Short-lived JWT used to authenticate API requests.
+        refresh_token:
+          type: string
+          description: Long-lived JWT used to obtain new token pairs via `/refresh`.
+      required: [access_token, refresh_token]
+
+    RefreshRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+      required: [refresh_token]
+
+    LogoutRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+      required: [refresh_token]
+
+    MeResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+      required: [id, email]
+
+    ChangePasswordRequest:
+      type: object
+      properties:
+        current_password:
+          type: string
+          format: password
+          maxLength: 128
+        new_password:
+          type: string
+          description: Must be 8–128 characters.
+          minLength: 8
+          maxLength: 128
+          format: password
+      required: [current_password, new_password]
+
+    PasswordResetRequestBody:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+      required: [email]
+
+    PasswordResetConfirmBody:
+      type: object
+      properties:
+        token:
+          type: string
+          description: One-time token from the password-reset email link.
+        new_password:
+          type: string
+          minLength: 8
+          maxLength: 128
+          format: password
+      required: [token, new_password]
+
+    EmailVerifyRequestBody:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+      required: [email]
+
+    EmailVerifyConfirmBody:
+      type: object
+      properties:
+        token:
+          type: string
+          description: One-time token from the verification email link.
+      required: [token]
+
+    AuthorizeResponse:
+      type: object
+      properties:
+        authorization_url:
+          type: string
+          format: uri
+          description: URL to redirect the user to in order to start the provider's consent flow.
+      required: [authorization_url]
+
+    ErrorMessage:
+      type: string
+      description: Plain-text error message.
+
+  responses:
+    BadRequest:
+      description: The request was malformed or refers to an invalid/expired resource
+      content:
+        text/plain:
+          schema:
+            $ref: "#/components/schemas/ErrorMessage"
+
+    Unauthorized:
+      description: Missing, invalid, or expired credentials
+      content:
+        text/plain:
+          schema:
+            $ref: "#/components/schemas/ErrorMessage"
+
+    Conflict:
+      description: The resource already exists
+      content:
+        text/plain:
+          schema:
+            $ref: "#/components/schemas/ErrorMessage"
+
+    ValidationError:
+      description: The request body failed validation
+      content:
+        text/plain:
+          schema:
+            $ref: "#/components/schemas/ErrorMessage"
+
+    RateLimited:
+      description: Too many requests — rate limit exceeded
+      content:
+        text/plain:
+          schema:
+            $ref: "#/components/schemas/ErrorMessage"
+
+security:
+  - BearerAuth: []

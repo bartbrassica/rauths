@@ -62,6 +62,8 @@ pub fn build_router(state: AppState) -> Router {
     let (prometheus_layer, metric_handle) = PROMETHEUS.clone();
     Router::new()
         .route("/health", get(routes::health))
+        .route("/openapi.yaml", get(routes::openapi_spec))
+        .route("/docs", get(routes::docs))
         .route(
             "/metrics",
             get(move || async move { metric_handle.render() }),
@@ -117,6 +119,8 @@ pub fn build_production_router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(routes::health))
+        .route("/openapi.yaml", get(routes::openapi_spec))
+        .route("/docs", get(routes::docs))
         .route(
             "/metrics",
             get(move || async move { metric_handle.render() }),
