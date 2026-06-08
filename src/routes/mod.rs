@@ -34,6 +34,21 @@ fn generate_secure_token() -> (String, String) {
     (raw, hash)
 }
 
+/// Increments the `auth_events_total{event, reason}` counter for a security
+/// event (login, logout, password reset, lockout, OAuth link, ...). Use an
+/// empty `reason` for events that don't have one (e.g. successes).
+fn record_auth_event(
+    event: &'static str,
+    reason: impl Into<axum_prometheus::metrics::SharedString>,
+) {
+    axum_prometheus::metrics::counter!(
+        "auth_events_total",
+        "event" => event,
+        "reason" => reason.into(),
+    )
+    .increment(1);
+}
+
 // --- /register ---
 
 #[derive(Deserialize)]
@@ -109,10 +124,12 @@ pub async fn register(
     let user = repo.create(&body.email, &hash).await.map_err(|e| {
         if matches!(e, DataError::EmailConflict) {
             tracing::warn!(email = %body.email, ip = %addr.ip(), event = "register_failed", reason = "email_conflict");
+            record_auth_event("register_failed", "email_conflict");
         }
         ApiError::from(e)
     })?;
     tracing::info!(email = %user.email, user_id = %user.id, ip = %addr.ip(), event = "register_success");
+    record_auth_event("register_success", "");
 
     let (raw_token, token_hash) = generate_secure_token();
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(900);
@@ -175,6 +192,7 @@ pub async fn login(
     let lockout = LockoutStore::new(&state.redis);
     if lockout.is_locked(&body.email).await? {
         tracing::warn!(email = %body.email, ip = %addr.ip(), event = "login_failed", reason = "account_locked");
+        record_auth_event("login_failed", "account_locked");
         return Err(ApiError::Unauthorized);
     }
 
@@ -183,17 +201,20 @@ pub async fn login(
         Some(u) => u,
         None => {
             tracing::warn!(email = %body.email, ip = %addr.ip(), event = "login_failed", reason = "unknown_email");
+            record_auth_event("login_failed", "unknown_email");
             return Err(ApiError::Unauthorized);
         }
     };
 
     let hash = user.password_hash.as_deref().ok_or_else(|| {
         tracing::warn!(email = %body.email, ip = %addr.ip(), event = "login_failed", reason = "oauth_only_account");
+        record_auth_event("login_failed", "oauth_only_account");
         ApiError::Unauthorized
     })?;
     if !state.passwords.verify(&body.password, hash)? {
         let attempts = lockout.record_failure(&body.email).await?;
         tracing::warn!(email = %body.email, ip = %addr.ip(), attempts, event = "login_failed", reason = "invalid_password");
+        record_auth_event("login_failed", "invalid_password");
         return Err(ApiError::Unauthorized);
     }
 
@@ -203,6 +224,7 @@ pub async fn login(
     // probing emails can't use this to learn whether an account is unverified.
     if user.email_verified_at.is_none() {
         tracing::warn!(email = %body.email, ip = %addr.ip(), event = "login_failed", reason = "email_not_verified");
+        record_auth_event("login_failed", "email_not_verified");
         return Err(ApiError::EmailNotVerified);
     }
 
@@ -217,6 +239,7 @@ pub async fn login(
         .await?;
 
     tracing::info!(email = %user.email, user_id = %user.id, ip = %addr.ip(), event = "login_success");
+    record_auth_event("login_success", "");
     Ok(Json(LoginResponse {
         access_token,
         refresh_token,
@@ -247,6 +270,7 @@ pub async fn refresh(
     body.validate()?;
     let claims = state.jwt.verify_refresh(&body.refresh_token).map_err(|_| {
         tracing::warn!(ip = %addr.ip(), event = "refresh_failed", reason = "invalid_token");
+        record_auth_event("refresh_failed", "invalid_token");
         ApiError::Unauthorized
     })?;
 
@@ -257,6 +281,7 @@ pub async fn refresh(
         .await?
         .ok_or_else(|| {
             tracing::warn!(user_id = %claims.sub, ip = %addr.ip(), event = "refresh_failed", reason = "token_revoked");
+            record_auth_event("refresh_failed", "token_revoked");
             ApiError::Unauthorized
         })?;
 
@@ -273,6 +298,7 @@ pub async fn refresh(
         .await?;
 
     tracing::info!(user_id = %claims.sub, ip = %addr.ip(), event = "token_refreshed");
+    record_auth_event("token_refreshed", "");
     Ok(Json(LoginResponse {
         access_token,
         refresh_token,
@@ -333,11 +359,13 @@ pub async fn change_password(
         .ok_or(ApiError::Unauthorized)?;
     if !state.passwords.verify(&body.current_password, hash)? {
         tracing::warn!(user_id = %claims.sub, ip = %addr.ip(), event = "change_password_failed", reason = "wrong_current_password");
+        record_auth_event("change_password_failed", "wrong_current_password");
         return Err(ApiError::Unauthorized);
     }
     let new_hash = state.passwords.hash(&body.new_password)?;
     repo.update_password(claims.sub, &new_hash).await?;
     tracing::info!(user_id = %claims.sub, ip = %addr.ip(), event = "password_changed");
+    record_auth_event("password_changed", "");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -351,6 +379,7 @@ pub async fn delete_me(
     let repo = UserRepository::new(&state.pool);
     repo.delete(claims.sub).await?;
     tracing::info!(user_id = %claims.sub, ip = %addr.ip(), event = "account_deleted");
+    record_auth_event("account_deleted", "");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -401,6 +430,7 @@ pub async fn logout_all(
         .revoke_all_sessions(claims.sub)
         .await?;
     tracing::info!(user_id = %claims.sub, ip = %addr.ip(), sessions_revoked = count, event = "logout_all");
+    record_auth_event("logout_all", "");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -429,6 +459,7 @@ pub async fn logout(
     body.validate()?;
     let claims = state.jwt.verify_refresh(&body.refresh_token).map_err(|_| {
         tracing::warn!(ip = %addr.ip(), event = "logout_failed", reason = "invalid_token");
+        record_auth_event("logout_failed", "invalid_token");
         ApiError::Unauthorized
     })?;
     let store = TokenStore::new(&state.redis);
@@ -444,6 +475,7 @@ pub async fn logout(
     }
 
     tracing::info!(user_id = %claims.sub, ip = %addr.ip(), event = "logout");
+    record_auth_event("logout", "");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -486,6 +518,7 @@ pub async fn password_reset_request(
             tracing::error!(user_id = %user.id, error = %e, event = "password_reset_email_failed");
         } else {
             tracing::info!(user_id = %user.id, ip = %addr.ip(), event = "password_reset_requested");
+            record_auth_event("password_reset_requested", "");
         }
     }
 
@@ -533,6 +566,7 @@ pub async fn password_reset_confirm(
         .await?;
 
     tracing::info!(user_id = %user_id, ip = %addr.ip(), event = "password_reset_confirmed");
+    record_auth_event("password_reset_confirmed", "");
     Ok(StatusCode::OK)
 }
 
@@ -577,6 +611,7 @@ pub async fn email_verify_request(
             tracing::error!(user_id = %user.id, error = %e, event = "verification_email_failed");
         } else {
             tracing::info!(user_id = %user.id, ip = %addr.ip(), event = "verification_requested");
+            record_auth_event("verification_requested", "");
         }
     }
 
@@ -617,6 +652,7 @@ pub async fn email_verify_confirm(
         .await?;
 
     tracing::info!(user_id = %user_id, ip = %addr.ip(), event = "email_verified");
+    record_auth_event("email_verified", "");
     Ok(StatusCode::OK)
 }
 
