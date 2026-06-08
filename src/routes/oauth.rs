@@ -2,8 +2,10 @@ use axum::{
     Json,
     extract::{Path, Query, State},
 };
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
     AppState,
@@ -94,8 +96,13 @@ pub async fn authorize(
     rand::thread_rng().fill_bytes(&mut bytes);
     let oauth_state = hex::encode(bytes);
 
+    let mut verifier_bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut verifier_bytes);
+    let code_verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
+    let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
+
     TokenStore::new(&state.redis)
-        .store_oauth_state(&oauth_state, &provider)
+        .store_oauth_state(&oauth_state, &provider, &code_verifier)
         .await?;
 
     let redirect_uri = format!("{}/auth/{provider}/callback", state.app_base_url);
@@ -107,7 +114,9 @@ pub async fn authorize(
         .append_pair("scope", config.scope)
         .append_pair("state", &oauth_state)
         .append_pair("redirect_uri", &redirect_uri)
-        .append_pair("response_type", "code");
+        .append_pair("response_type", "code")
+        .append_pair("code_challenge", &code_challenge)
+        .append_pair("code_challenge_method", "S256");
 
     Ok(Json(AuthorizeResponse {
         authorization_url: url.to_string(),
@@ -139,7 +148,7 @@ pub async fn callback(
         .state
         .ok_or_else(|| ApiError::BadRequest("missing state".into()))?;
 
-    let stored_provider = TokenStore::new(&state.redis)
+    let (stored_provider, code_verifier) = TokenStore::new(&state.redis)
         .consume_oauth_state(&oauth_state)
         .await?
         .ok_or_else(|| ApiError::BadRequest("invalid or expired state".into()))?;
@@ -151,7 +160,8 @@ pub async fn callback(
     let config = provider_config(&provider, &state)?;
     let redirect_uri = format!("{}/auth/{provider}/callback", state.app_base_url);
 
-    let access_token = exchange_code(&state.http, &config, &code, &redirect_uri).await?;
+    let access_token =
+        exchange_code(&state.http, &config, &code, &redirect_uri, &code_verifier).await?;
 
     let (provider_user_id, email) = match provider.as_str() {
         "github" => {
@@ -244,6 +254,7 @@ async fn exchange_code(
     config: &ProviderConfig<'_>,
     code: &str,
     redirect_uri: &str,
+    code_verifier: &str,
 ) -> Result<String, ApiError> {
     let resp = http
         .post(config.token_url)
@@ -254,6 +265,7 @@ async fn exchange_code(
             ("code", code),
             ("redirect_uri", redirect_uri),
             ("grant_type", "authorization_code"),
+            ("code_verifier", code_verifier),
         ])
         .send()
         .await

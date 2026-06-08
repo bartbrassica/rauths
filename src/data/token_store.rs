@@ -60,20 +60,38 @@ impl<'a> TokenStore<'a> {
         Ok(exists)
     }
 
-    pub async fn store_oauth_state(&self, state: &str, provider: &str) -> Result<(), DataError> {
+    pub async fn store_oauth_state(
+        &self,
+        state: &str,
+        provider: &str,
+        code_verifier: &str,
+    ) -> Result<(), DataError> {
         let mut conn = self.client.get_multiplexed_async_connection().await?;
-        let key = format!("oauth_state:{state}");
-        let _: () = conn.set_ex(key, provider, 600u64).await?;
+        let state_key = format!("oauth_state:{state}");
+        let pkce_key = format!("oauth_pkce:{state}");
+        redis::pipe()
+            .set_ex(&state_key, provider, 600u64)
+            .set_ex(&pkce_key, code_verifier, 600u64)
+            .query_async::<()>(&mut conn)
+            .await?;
         Ok(())
     }
 
-    /// Atomically retrieves and deletes an OAuth state token. Returns the stored provider name,
-    /// or None if the state is unknown or expired.
-    pub async fn consume_oauth_state(&self, state: &str) -> Result<Option<String>, DataError> {
+    /// Atomically retrieves and deletes an OAuth state token and its PKCE code verifier.
+    /// Returns `(provider, code_verifier)`, or None if the state is unknown or expired.
+    pub async fn consume_oauth_state(
+        &self,
+        state: &str,
+    ) -> Result<Option<(String, String)>, DataError> {
         let mut conn = self.client.get_multiplexed_async_connection().await?;
-        let key = format!("oauth_state:{state}");
-        let provider: Option<String> = conn.get_del(key).await?;
-        Ok(provider)
+        let state_key = format!("oauth_state:{state}");
+        let pkce_key = format!("oauth_pkce:{state}");
+        let (provider, code_verifier): (Option<String>, Option<String>) = redis::pipe()
+            .get_del(&state_key)
+            .get_del(&pkce_key)
+            .query_async(&mut conn)
+            .await?;
+        Ok(provider.zip(code_verifier))
     }
 
     /// Revokes all active sessions for a user. Returns the number of sessions found in the index.
@@ -218,12 +236,15 @@ mod tests {
         let state_token = Uuid::new_v4().to_string();
 
         store
-            .store_oauth_state(&state_token, "github")
+            .store_oauth_state(&state_token, "github", "test-verifier")
             .await
             .unwrap();
 
-        let provider = store.consume_oauth_state(&state_token).await.unwrap();
-        assert_eq!(provider, Some("github".to_string()));
+        let entry = store.consume_oauth_state(&state_token).await.unwrap();
+        assert_eq!(
+            entry,
+            Some(("github".to_string(), "test-verifier".to_string()))
+        );
 
         let second_consume = store.consume_oauth_state(&state_token).await.unwrap();
         assert!(second_consume.is_none(), "state must be one-time-use");
