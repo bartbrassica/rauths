@@ -153,6 +153,20 @@ pub async fn callback(
         account.user_id
     } else {
         let user = match user_repo.find_by_email(&email).await? {
+            Some(existing) if existing.email_verified_at.is_none() => {
+                // The provider has just proven ownership of this email, but the
+                // existing account never verified it — it was squatting on the
+                // address. Reclaim it for the verified owner and revoke the
+                // squatter's password so it can no longer be used to log in.
+                user_repo.mark_verified(existing.id).await?;
+                user_repo.clear_password(existing.id).await?;
+                tracing::warn!(
+                    user_id = %existing.id,
+                    provider = %provider,
+                    event = "oauth_account_reclaimed"
+                );
+                existing
+            }
             Some(existing) => existing,
             None => user_repo.create_oauth_user(&email).await?,
         };

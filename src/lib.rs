@@ -60,11 +60,14 @@ pub fn build_router(state: AppState) -> Router {
             "/password-reset/confirm",
             post(routes::password_reset_confirm),
         )
+        .route("/email-verify/request", post(routes::email_verify_request))
+        .route("/email-verify/confirm", post(routes::email_verify_confirm))
         .merge(oauth_routes())
         .with_state(state)
 }
 
-/// Production router with per-IP rate limiting on /register, /login, and /password-reset/request.
+/// Production router with per-IP rate limiting on /register, /login, /password-reset/request,
+/// and /email-verify/request.
 pub fn build_production_router(state: AppState) -> Router {
     let rate_limited = Router::new()
         .route("/login", post(routes::login))
@@ -73,6 +76,7 @@ pub fn build_production_router(state: AppState) -> Router {
             "/password-reset/request",
             post(routes::password_reset_request),
         )
+        .route("/email-verify/request", post(routes::email_verify_request))
         .route_layer(mw::from_fn_with_state(
             state.clone(),
             middleware::rate_limit,
@@ -90,6 +94,7 @@ pub fn build_production_router(state: AppState) -> Router {
             "/password-reset/confirm",
             post(routes::password_reset_confirm),
         )
+        .route("/email-verify/confirm", post(routes::email_verify_confirm))
         .merge(oauth_routes())
         .with_state(state)
 }
