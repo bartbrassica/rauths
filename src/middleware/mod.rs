@@ -12,7 +12,7 @@ use axum::{
 };
 use redis::AsyncCommands;
 
-use crate::{AppState, domain::Claims};
+use crate::{AppState, data::TokenStore, domain::Claims};
 
 // --- JWT auth extractor ---
 
@@ -41,6 +41,18 @@ impl FromRequestParts<AppState> for AuthUser {
             .jwt
             .verify_access(token)
             .map_err(|_| AuthError::InvalidToken)?;
+
+        // Fails open on cache errors so a Redis outage never locks out authenticated
+        // users — the same trade-off the rate limiter makes.
+        match TokenStore::new(&state.redis)
+            .is_access_token_revoked(claims.jti)
+            .await
+        {
+            Ok(true) => return Err(AuthError::InvalidToken),
+            Ok(false) => {}
+            Err(e) => tracing::error!(error = %e, "revocation check unavailable, failing open"),
+        }
+
         Ok(AuthUser(claims))
     }
 }

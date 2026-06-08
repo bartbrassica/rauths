@@ -1,7 +1,4 @@
-use std::{
-    net::SocketAddr,
-    sync::Arc,
-};
+use std::{net::SocketAddr, sync::Arc};
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -42,10 +39,7 @@ fn oauth_config(mock: &MockServer) -> OAuthConfig {
     }
 }
 
-async fn spawn_app(
-    pool: PgPool,
-    oauth: OAuthConfig,
-) -> (String, CapturedEmails) {
+async fn spawn_app(pool: PgPool, oauth: OAuthConfig) -> (String, CapturedEmails) {
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let redis = redis::Client::open(redis_url).expect("valid redis url");
 
