@@ -1,6 +1,6 @@
 use std::{
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 use serde_json::{Value, json};
@@ -14,7 +14,7 @@ use wiremock::{
 use rustauth::{
     AppState, OAuthConfig, build_router,
     domain::{JwtManager, PasswordService},
-    email::EmailClient,
+    email::{CapturedEmails, EmailClient},
 };
 
 const TEST_PRIVATE_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----
@@ -45,7 +45,7 @@ fn oauth_config(mock: &MockServer) -> OAuthConfig {
 async fn spawn_app(
     pool: PgPool,
     oauth: OAuthConfig,
-) -> (String, Arc<Mutex<Vec<(String, String)>>>) {
+) -> (String, CapturedEmails) {
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let redis = redis::Client::open(redis_url).expect("valid redis url");
 
@@ -102,7 +102,7 @@ fn find_link(emails: &[(String, String)], path_fragment: &str) -> String {
 async fn register_and_verify(
     base: &str,
     client: &reqwest::Client,
-    captured: &Arc<Mutex<Vec<(String, String)>>>,
+    captured: &CapturedEmails,
     email: &str,
     password: &str,
 ) {

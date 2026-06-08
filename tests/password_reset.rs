@@ -1,6 +1,6 @@
 use std::{
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 use sqlx::PgPool;
@@ -9,7 +9,7 @@ use tokio::net::TcpListener;
 use rustauth::{
     AppState, OAuthConfig, build_router,
     domain::{JwtManager, PasswordService},
-    email::EmailClient,
+    email::{CapturedEmails, EmailClient},
 };
 
 const TEST_PRIVATE_PEM: &[u8] = b"-----BEGIN PRIVATE KEY-----
@@ -20,7 +20,7 @@ const TEST_PUBLIC_PEM: &[u8] = b"-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEADyia6fy2lW6Ezrs11/ZGt0axfBAfMSJu+rfdNbu62/Y=
 -----END PUBLIC KEY-----";
 
-async fn spawn_app(pool: PgPool) -> (String, Arc<Mutex<Vec<(String, String)>>>) {
+async fn spawn_app(pool: PgPool) -> (String, CapturedEmails) {
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into());
     let redis = redis::Client::open(redis_url).expect("valid redis url");
 
@@ -80,7 +80,7 @@ fn find_link(emails: &[(String, String)], path_fragment: &str) -> String {
 async fn register_and_verify(
     base: &str,
     client: &reqwest::Client,
-    captured: &Arc<Mutex<Vec<(String, String)>>>,
+    captured: &CapturedEmails,
     email: &str,
     password: &str,
 ) {
