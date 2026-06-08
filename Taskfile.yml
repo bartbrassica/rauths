@@ -110,7 +110,7 @@ tasks:
   docker:build:
     desc: Build production Docker image
     cmds:
-      - docker build -t rustauth .
+      - docker build -t rauths .
 
   docker:up:
     desc: Start full production stack (app + infra) — set POSTGRES_PASSWORD, JWT_PRIVATE_KEY_PEM, JWT_PUBLIC_KEY_PEM in env first

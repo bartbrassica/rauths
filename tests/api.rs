@@ -3,7 +3,7 @@ use std::{net::SocketAddr, sync::Arc};
 use sqlx::PgPool;
 use tokio::net::TcpListener;
 
-use rustauth::{
+use rauths::{
     AppState, OAuthConfig, build_router,
     domain::{JwtManager, PasswordService},
     email::{CapturedEmails, EmailClient},

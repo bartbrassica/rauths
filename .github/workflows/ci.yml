@@ -55,11 +55,11 @@ jobs:
       postgres:
         image: postgres:17-alpine
         env:
-          POSTGRES_DB: rustauth
-          POSTGRES_USER: rustauth
+          POSTGRES_DB: rauths
+          POSTGRES_USER: rauths
           POSTGRES_PASSWORD: password
         options: >-
-          --health-cmd "pg_isready -U rustauth"
+          --health-cmd "pg_isready -U rauths"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 5
@@ -77,7 +77,7 @@ jobs:
           - 6379:6379
 
     env:
-      DATABASE_URL: postgres://rustauth:password@localhost:5432/rustauth
+      DATABASE_URL: postgres://rauths:password@localhost:5432/rauths
       REDIS_URL: redis://localhost:6379
       SQLX_OFFLINE: false
 

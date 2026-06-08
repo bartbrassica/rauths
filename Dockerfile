@@ -13,10 +13,10 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
 ENV SQLX_OFFLINE=true
-RUN cargo build --release --bin rustauth
+RUN cargo build --release --bin rauths
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata
-COPY --from=builder /app/target/release/rustauth /usr/local/bin/rustauth
+COPY --from=builder /app/target/release/rauths /usr/local/bin/rauths
 EXPOSE 3000 50051
-ENTRYPOINT ["rustauth"]
+ENTRYPOINT ["rauths"]

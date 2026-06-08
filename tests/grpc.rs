@@ -5,7 +5,7 @@ use tonic::transport::Server as TonicServer;
 use tonic::transport::server::TcpIncoming;
 use uuid::Uuid;
 
-use rustauth::{
+use rauths::{
     domain::JwtManager,
     services::{AuthServiceClient, AuthServiceImpl, AuthServiceServer, VerifyTokenRequest},
 };

@@ -1920,6 +1920,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "rauths"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "axum 0.8.9",
+ "axum-prometheus",
+ "base64",
+ "chrono",
+ "dotenvy",
+ "hex",
+ "jsonwebtoken",
+ "prost",
+ "rand 0.8.6",
+ "redis",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "tower 0.5.3",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "raw-cpuid"
 version = "11.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2069,39 +2102,6 @@ dependencies = [
  "spki",
  "subtle",
  "zeroize",
-]
-
-[[package]]
-name = "rustauth"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "axum 0.8.9",
- "axum-prometheus",
- "base64",
- "chrono",
- "dotenvy",
- "hex",
- "jsonwebtoken",
- "prost",
- "rand 0.8.6",
- "redis",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "thiserror",
- "tokio",
- "tonic",
- "tonic-build",
- "tower 0.5.3",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "wiremock",
 ]
 
 [[package]]
