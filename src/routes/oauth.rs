@@ -205,6 +205,7 @@ pub async fn callback(
                     provider = %provider,
                     event = "oauth_account_reclaimed"
                 );
+                super::record_auth_event("oauth_account_reclaimed", provider.clone());
                 existing
             }
             Some(existing) => existing,
@@ -235,6 +236,7 @@ pub async fn callback(
         provider = %provider,
         event = "oauth_login_success"
     );
+    super::record_auth_event("oauth_login_success", provider.clone());
 
     Ok(Json(LoginResponse {
         access_token: access_token_jwt,

@@ -5,12 +5,13 @@ pub mod middleware;
 pub mod routes;
 pub mod services;
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use axum::{
     Router, middleware as mw,
     routing::{get, patch, post},
 };
+use axum_prometheus::{PrometheusMetricLayer, metrics_exporter_prometheus::PrometheusHandle};
 
 use domain::{JwtManager, PasswordService};
 use email::EmailClient;
@@ -44,6 +45,12 @@ pub struct AppState {
     pub http: reqwest::Client,
 }
 
+/// `PrometheusMetricLayer::pair()` installs a global `metrics` recorder, which
+/// can only happen once per process — so the pair is built lazily and shared
+/// across every router we construct (each integration test spawns its own).
+static PROMETHEUS: LazyLock<(PrometheusMetricLayer<'static>, PrometheusHandle)> =
+    LazyLock::new(PrometheusMetricLayer::pair);
+
 fn oauth_routes() -> Router<AppState> {
     Router::new()
         .route("/auth/{provider}", get(routes::oauth::authorize))
@@ -52,8 +59,13 @@ fn oauth_routes() -> Router<AppState> {
 
 /// Router without rate limiting — for integration tests.
 pub fn build_router(state: AppState) -> Router {
+    let (prometheus_layer, metric_handle) = PROMETHEUS.clone();
     Router::new()
         .route("/health", get(routes::health))
+        .route(
+            "/metrics",
+            get(move || async move { metric_handle.render() }),
+        )
         .route("/register", post(routes::register))
         .route("/login", post(routes::login))
         .route("/refresh", post(routes::refresh))
@@ -72,12 +84,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/email-verify/request", post(routes::email_verify_request))
         .route("/email-verify/confirm", post(routes::email_verify_confirm))
         .merge(oauth_routes())
+        .layer(prometheus_layer)
         .with_state(state)
 }
 
 /// Production router with per-IP rate limiting on /register, /login, /password-reset/request,
 /// and /email-verify/request.
 pub fn build_production_router(state: AppState) -> Router {
+    let (prometheus_layer, metric_handle) = PROMETHEUS.clone();
     let rate_limited = Router::new()
         .route("/login", post(routes::login))
         .route("/register", post(routes::register))
@@ -93,6 +107,10 @@ pub fn build_production_router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(routes::health))
+        .route(
+            "/metrics",
+            get(move || async move { metric_handle.render() }),
+        )
         .merge(rate_limited)
         .route("/refresh", post(routes::refresh))
         .route("/logout", post(routes::logout))
@@ -105,5 +123,6 @@ pub fn build_production_router(state: AppState) -> Router {
         )
         .route("/email-verify/confirm", post(routes::email_verify_confirm))
         .merge(oauth_routes())
+        .layer(prometheus_layer)
         .with_state(state)
 }

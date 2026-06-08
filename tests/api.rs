@@ -925,6 +925,29 @@ async fn health_returns_200_when_db_and_redis_are_up(pool: PgPool) {
     assert_eq!(body["redis"], "ok");
 }
 
+// --- /metrics ---
+
+#[sqlx::test]
+async fn metrics_exposes_request_and_auth_event_counters(pool: PgPool) {
+    let (base, _captured) = spawn_app(pool).await;
+    let client = reqwest::Client::new();
+
+    // Trigger an HTTP request and a recorded auth event.
+    client
+        .post(format!("{base}/login"))
+        .json(&serde_json::json!({"email": "nobody@example.com", "password": "hunter2!"}))
+        .send()
+        .await
+        .unwrap();
+
+    let res = client.get(format!("{base}/metrics")).send().await.unwrap();
+
+    assert_eq!(res.status(), 200);
+    let body = res.text().await.unwrap();
+    assert!(body.contains("axum_http_requests_total"));
+    assert!(body.contains(r#"auth_events_total{event="login_failed",reason="unknown_email"}"#));
+}
+
 // --- email verification ---
 
 #[sqlx::test]
