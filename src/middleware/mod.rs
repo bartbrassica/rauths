@@ -77,6 +77,9 @@ impl IntoResponse for AuthError {
 const RATE_LIMIT_MAX: u64 = 5;
 const RATE_LIMIT_WINDOW_SECS: i64 = 60;
 
+const USER_RATE_LIMIT_MAX: u64 = 30;
+const USER_RATE_LIMIT_WINDOW_SECS: i64 = 60;
+
 /// Per-IP rate limiter backed by Redis. Allows [`RATE_LIMIT_MAX`] requests per
 /// [`RATE_LIMIT_WINDOW_SECS`] seconds. Fails open if Redis is unavailable so a
 /// cache outage never takes down the auth service.
@@ -90,7 +93,7 @@ pub async fn rate_limit(State(state): State<AppState>, request: Request, next: N
     let route = request.uri().path().to_owned();
     let key = format!("rl:{route}:{ip}");
 
-    match check_rate_limit(&state.redis, &key).await {
+    match check_rate_limit(&state.redis, &key, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_SECS).await {
         Ok(true) => {
             tracing::warn!(ip = %ip, route = %route, event = "rate_limit_exceeded");
             (StatusCode::TOO_MANY_REQUESTS, "too many requests").into_response()
@@ -103,12 +106,62 @@ pub async fn rate_limit(State(state): State<AppState>, request: Request, next: N
     }
 }
 
-async fn check_rate_limit(redis: &redis::Client, key: &str) -> redis::RedisResult<bool> {
+/// Per-user rate limiter backed by Redis, for authenticated endpoints. Allows
+/// [`USER_RATE_LIMIT_MAX`] requests per [`USER_RATE_LIMIT_WINDOW_SECS`] seconds
+/// per user, on top of the per-IP limit. Requests without a valid access token
+/// are passed through — [`AuthUser`] is responsible for rejecting those.
+/// Fails open if Redis is unavailable, matching [`rate_limit`].
+pub async fn user_rate_limit(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let user_id = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .and_then(|token| state.jwt.verify_access(token).ok())
+        .map(|claims| claims.sub);
+
+    let Some(user_id) = user_id else {
+        return next.run(request).await;
+    };
+
+    let route = request.uri().path().to_owned();
+    let key = format!("rl:user:{route}:{user_id}");
+
+    match check_rate_limit(
+        &state.redis,
+        &key,
+        USER_RATE_LIMIT_MAX,
+        USER_RATE_LIMIT_WINDOW_SECS,
+    )
+    .await
+    {
+        Ok(true) => {
+            tracing::warn!(user_id = %user_id, route = %route, event = "user_rate_limit_exceeded");
+            (StatusCode::TOO_MANY_REQUESTS, "too many requests").into_response()
+        }
+        Ok(false) => next.run(request).await,
+        Err(e) => {
+            tracing::error!(error = %e, "rate limiter unavailable, failing open");
+            next.run(request).await
+        }
+    }
+}
+
+async fn check_rate_limit(
+    redis: &redis::Client,
+    key: &str,
+    max: u64,
+    window_secs: i64,
+) -> redis::RedisResult<bool> {
     let mut conn = redis.get_multiplexed_async_connection().await?;
     let count: u64 = conn.incr(key, 1u64).await?;
     // Only set TTL on the first increment to avoid resetting the window on each hit.
     if count == 1 {
-        let _: () = conn.expire(key, RATE_LIMIT_WINDOW_SECS).await?;
+        let _: () = conn.expire(key, window_secs).await?;
     }
-    Ok(count > RATE_LIMIT_MAX)
+    Ok(count > max)
 }

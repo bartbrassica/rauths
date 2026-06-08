@@ -89,7 +89,7 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 /// Production router with per-IP rate limiting on /register, /login, /password-reset/request,
-/// and /email-verify/request.
+/// and /email-verify/request, plus a per-user rate limit on authenticated endpoints.
 pub fn build_production_router(state: AppState) -> Router {
     let (prometheus_layer, metric_handle) = PROMETHEUS.clone();
     let rate_limited = Router::new()
@@ -105,6 +105,16 @@ pub fn build_production_router(state: AppState) -> Router {
             middleware::rate_limit,
         ));
 
+    let user_rate_limited = Router::new()
+        .route("/logout", post(routes::logout))
+        .route("/me", get(routes::me).delete(routes::delete_me))
+        .route("/me/password", patch(routes::change_password))
+        .route("/me/sessions/revoke-all", post(routes::logout_all))
+        .route_layer(mw::from_fn_with_state(
+            state.clone(),
+            middleware::user_rate_limit,
+        ));
+
     Router::new()
         .route("/health", get(routes::health))
         .route(
@@ -112,11 +122,8 @@ pub fn build_production_router(state: AppState) -> Router {
             get(move || async move { metric_handle.render() }),
         )
         .merge(rate_limited)
+        .merge(user_rate_limited)
         .route("/refresh", post(routes::refresh))
-        .route("/logout", post(routes::logout))
-        .route("/me", get(routes::me).delete(routes::delete_me))
-        .route("/me/password", patch(routes::change_password))
-        .route("/me/sessions/revoke-all", post(routes::logout_all))
         .route(
             "/password-reset/confirm",
             post(routes::password_reset_confirm),
