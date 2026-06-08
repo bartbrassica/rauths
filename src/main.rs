@@ -5,7 +5,7 @@ use sqlx::postgres::PgPoolOptions;
 use tonic::transport::Server as TonicServer;
 use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
-use rustauth::{
+use rauths::{
     AppState, OAuthConfig, build_production_router,
     domain::{JwtManager, PasswordService},
     email::EmailClient,
@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "rustauth=debug,tower_http=debug".into()),
+                .unwrap_or_else(|_| "rauths=debug,tower_http=debug".into()),
         )
         .with(fmt_layer)
         .init();

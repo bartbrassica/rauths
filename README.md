@@ -1,4 +1,4 @@
-# rustauth
+# rauths
 
 A headless central authentication microservice built in Rust. Designed as the single source of truth for identity across multiple services — exposes a public REST API for clients and a private gRPC interface for internal service-to-service token verification.
 
@@ -18,7 +18,7 @@ A headless central authentication microservice built in Rust. Designed as the si
 
 ```
              ┌─────────────────────────────────────┐
-             │              rustauth                │
+             │              rauths                │
              │                                     │
 Clients ────►│  Axum REST  :3000                   │
              │  /register  /login  /refresh         │
@@ -64,8 +64,8 @@ Services ───►│  Tonic gRPC :50051                  │
 ### First-time setup
 
 ```bash
-git clone https://github.com/bartbrassica/rustauth
-cd rustauth
+git clone https://github.com/bartbrassica/rauths
+cd rauths
 task setup          # copies .env, installs tooling
 task keys:gen       # generates Ed25519 keypair → private.pem + public.pem
 ```

@@ -310,7 +310,7 @@ async fn fetch_github_user(
     let user: GithubUser = http
         .get(format!("{api_base}/user"))
         .bearer_auth(token)
-        .header("User-Agent", "rustauth")
+        .header("User-Agent", "rauths")
         .send()
         .await
         .map_err(|_| ApiError::Internal)?
@@ -324,7 +324,7 @@ async fn fetch_github_user(
         let emails: Vec<GithubEmail> = http
             .get(format!("{api_base}/user/emails"))
             .bearer_auth(token)
-            .header("User-Agent", "rustauth")
+            .header("User-Agent", "rauths")
             .send()
             .await
             .map_err(|_| ApiError::Internal)?

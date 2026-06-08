@@ -8,7 +8,7 @@ use wiremock::{
     matchers::{method, path},
 };
 
-use rustauth::{
+use rauths::{
     AppState, OAuthConfig, build_router,
     domain::{JwtManager, PasswordService},
     email::{CapturedEmails, EmailClient},
