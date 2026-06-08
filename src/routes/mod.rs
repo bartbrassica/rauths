@@ -16,8 +16,8 @@ use uuid::Uuid;
 use crate::{
     AppState,
     data::{
-        DataError, EmailVerificationTokenRepository, LockoutStore, ResetTokenRepository,
-        RoleRepository, TokenStore, UserRepository,
+        AuditLogRepository, DataError, EmailVerificationTokenRepository, LockoutStore,
+        ResetTokenRepository, RoleRepository, TokenStore, UserRepository,
     },
     domain::DomainError,
     middleware::AuthUser,
@@ -47,6 +47,24 @@ fn record_auth_event(
         "reason" => reason.into(),
     )
     .increment(1);
+}
+
+/// Persists a security event to the `audit_events` table for compliance and
+/// forensics. Insert failures are logged but never propagated — an audit-log
+/// outage must not block authentication.
+async fn audit(
+    state: &AppState,
+    user_id: Option<Uuid>,
+    event: &'static str,
+    reason: Option<&str>,
+    ip: std::net::IpAddr,
+) {
+    if let Err(e) = AuditLogRepository::new(&state.pool)
+        .record(user_id, event, reason, &ip.to_string())
+        .await
+    {
+        tracing::error!(error = %e, event, "audit_log_write_failed");
+    }
 }
 
 // --- /register ---
@@ -121,15 +139,27 @@ pub async fn register(
     body.validate()?;
     let hash = state.passwords.hash(&body.password)?;
     let repo = UserRepository::new(&state.pool);
-    let user = repo.create(&body.email, &hash).await.map_err(|e| {
-        if matches!(e, DataError::EmailConflict) {
-            tracing::warn!(email = %body.email, ip = %addr.ip(), event = "register_failed", reason = "email_conflict");
-            record_auth_event("register_failed", "email_conflict");
+    let user = match repo.create(&body.email, &hash).await {
+        Ok(user) => user,
+        Err(e) => {
+            if matches!(e, DataError::EmailConflict) {
+                tracing::warn!(email = %body.email, ip = %addr.ip(), event = "register_failed", reason = "email_conflict");
+                record_auth_event("register_failed", "email_conflict");
+                audit(
+                    &state,
+                    None,
+                    "register_failed",
+                    Some("email_conflict"),
+                    addr.ip(),
+                )
+                .await;
+            }
+            return Err(ApiError::from(e));
         }
-        ApiError::from(e)
-    })?;
+    };
     tracing::info!(email = %user.email, user_id = %user.id, ip = %addr.ip(), event = "register_success");
     record_auth_event("register_success", "");
+    audit(&state, Some(user.id), "register_success", None, addr.ip()).await;
 
     let (raw_token, token_hash) = generate_secure_token();
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(900);
@@ -193,6 +223,14 @@ pub async fn login(
     if lockout.is_locked(&body.email).await? {
         tracing::warn!(email = %body.email, ip = %addr.ip(), event = "login_failed", reason = "account_locked");
         record_auth_event("login_failed", "account_locked");
+        audit(
+            &state,
+            None,
+            "login_failed",
+            Some("account_locked"),
+            addr.ip(),
+        )
+        .await;
         return Err(ApiError::Unauthorized);
     }
 
@@ -202,19 +240,46 @@ pub async fn login(
         None => {
             tracing::warn!(email = %body.email, ip = %addr.ip(), event = "login_failed", reason = "unknown_email");
             record_auth_event("login_failed", "unknown_email");
+            audit(
+                &state,
+                None,
+                "login_failed",
+                Some("unknown_email"),
+                addr.ip(),
+            )
+            .await;
             return Err(ApiError::Unauthorized);
         }
     };
 
-    let hash = user.password_hash.as_deref().ok_or_else(|| {
-        tracing::warn!(email = %body.email, ip = %addr.ip(), event = "login_failed", reason = "oauth_only_account");
-        record_auth_event("login_failed", "oauth_only_account");
-        ApiError::Unauthorized
-    })?;
+    let hash = match user.password_hash.as_deref() {
+        Some(hash) => hash,
+        None => {
+            tracing::warn!(email = %body.email, ip = %addr.ip(), event = "login_failed", reason = "oauth_only_account");
+            record_auth_event("login_failed", "oauth_only_account");
+            audit(
+                &state,
+                Some(user.id),
+                "login_failed",
+                Some("oauth_only_account"),
+                addr.ip(),
+            )
+            .await;
+            return Err(ApiError::Unauthorized);
+        }
+    };
     if !state.passwords.verify(&body.password, hash)? {
         let attempts = lockout.record_failure(&body.email).await?;
         tracing::warn!(email = %body.email, ip = %addr.ip(), attempts, event = "login_failed", reason = "invalid_password");
         record_auth_event("login_failed", "invalid_password");
+        audit(
+            &state,
+            Some(user.id),
+            "login_failed",
+            Some("invalid_password"),
+            addr.ip(),
+        )
+        .await;
         return Err(ApiError::Unauthorized);
     }
 
@@ -225,6 +290,14 @@ pub async fn login(
     if user.email_verified_at.is_none() {
         tracing::warn!(email = %body.email, ip = %addr.ip(), event = "login_failed", reason = "email_not_verified");
         record_auth_event("login_failed", "email_not_verified");
+        audit(
+            &state,
+            Some(user.id),
+            "login_failed",
+            Some("email_not_verified"),
+            addr.ip(),
+        )
+        .await;
         return Err(ApiError::EmailNotVerified);
     }
 
@@ -240,6 +313,7 @@ pub async fn login(
 
     tracing::info!(email = %user.email, user_id = %user.id, ip = %addr.ip(), event = "login_success");
     record_auth_event("login_success", "");
+    audit(&state, Some(user.id), "login_success", None, addr.ip()).await;
     Ok(Json(LoginResponse {
         access_token,
         refresh_token,
@@ -268,22 +342,39 @@ pub async fn refresh(
     Json(body): Json<RefreshRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
     body.validate()?;
-    let claims = state.jwt.verify_refresh(&body.refresh_token).map_err(|_| {
-        tracing::warn!(ip = %addr.ip(), event = "refresh_failed", reason = "invalid_token");
-        record_auth_event("refresh_failed", "invalid_token");
-        ApiError::Unauthorized
-    })?;
+    let claims = match state.jwt.verify_refresh(&body.refresh_token) {
+        Ok(claims) => claims,
+        Err(_) => {
+            tracing::warn!(ip = %addr.ip(), event = "refresh_failed", reason = "invalid_token");
+            record_auth_event("refresh_failed", "invalid_token");
+            audit(
+                &state,
+                None,
+                "refresh_failed",
+                Some("invalid_token"),
+                addr.ip(),
+            )
+            .await;
+            return Err(ApiError::Unauthorized);
+        }
+    };
 
     let store = TokenStore::new(&state.redis);
     // Atomically consume the old JTI — None means already revoked or unknown.
-    store
-        .revoke_refresh_token(claims.jti)
-        .await?
-        .ok_or_else(|| {
-            tracing::warn!(user_id = %claims.sub, ip = %addr.ip(), event = "refresh_failed", reason = "token_revoked");
-            record_auth_event("refresh_failed", "token_revoked");
-            ApiError::Unauthorized
-        })?;
+    let revoked = store.revoke_refresh_token(claims.jti).await?;
+    if revoked.is_none() {
+        tracing::warn!(user_id = %claims.sub, ip = %addr.ip(), event = "refresh_failed", reason = "token_revoked");
+        record_auth_event("refresh_failed", "token_revoked");
+        audit(
+            &state,
+            Some(claims.sub),
+            "refresh_failed",
+            Some("token_revoked"),
+            addr.ip(),
+        )
+        .await;
+        return Err(ApiError::Unauthorized);
+    }
 
     let roles = RoleRepository::new(&state.pool)
         .list_for_user(claims.sub)
@@ -299,6 +390,7 @@ pub async fn refresh(
 
     tracing::info!(user_id = %claims.sub, ip = %addr.ip(), event = "token_refreshed");
     record_auth_event("token_refreshed", "");
+    audit(&state, Some(claims.sub), "token_refreshed", None, addr.ip()).await;
     Ok(Json(LoginResponse {
         access_token,
         refresh_token,
@@ -360,12 +452,28 @@ pub async fn change_password(
     if !state.passwords.verify(&body.current_password, hash)? {
         tracing::warn!(user_id = %claims.sub, ip = %addr.ip(), event = "change_password_failed", reason = "wrong_current_password");
         record_auth_event("change_password_failed", "wrong_current_password");
+        audit(
+            &state,
+            Some(claims.sub),
+            "change_password_failed",
+            Some("wrong_current_password"),
+            addr.ip(),
+        )
+        .await;
         return Err(ApiError::Unauthorized);
     }
     let new_hash = state.passwords.hash(&body.new_password)?;
     repo.update_password(claims.sub, &new_hash).await?;
     tracing::info!(user_id = %claims.sub, ip = %addr.ip(), event = "password_changed");
     record_auth_event("password_changed", "");
+    audit(
+        &state,
+        Some(claims.sub),
+        "password_changed",
+        None,
+        addr.ip(),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -376,6 +484,9 @@ pub async fn delete_me(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
 ) -> Result<StatusCode, ApiError> {
+    // Recorded before deletion — once the user row is gone, an audit_events
+    // row referencing it would violate the foreign-key constraint.
+    audit(&state, Some(claims.sub), "account_deleted", None, addr.ip()).await;
     let repo = UserRepository::new(&state.pool);
     repo.delete(claims.sub).await?;
     tracing::info!(user_id = %claims.sub, ip = %addr.ip(), event = "account_deleted");
@@ -431,6 +542,7 @@ pub async fn logout_all(
         .await?;
     tracing::info!(user_id = %claims.sub, ip = %addr.ip(), sessions_revoked = count, event = "logout_all");
     record_auth_event("logout_all", "");
+    audit(&state, Some(claims.sub), "logout_all", None, addr.ip()).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -457,11 +569,22 @@ pub async fn logout(
     Json(body): Json<LogoutRequest>,
 ) -> Result<StatusCode, ApiError> {
     body.validate()?;
-    let claims = state.jwt.verify_refresh(&body.refresh_token).map_err(|_| {
-        tracing::warn!(ip = %addr.ip(), event = "logout_failed", reason = "invalid_token");
-        record_auth_event("logout_failed", "invalid_token");
-        ApiError::Unauthorized
-    })?;
+    let claims = match state.jwt.verify_refresh(&body.refresh_token) {
+        Ok(claims) => claims,
+        Err(_) => {
+            tracing::warn!(ip = %addr.ip(), event = "logout_failed", reason = "invalid_token");
+            record_auth_event("logout_failed", "invalid_token");
+            audit(
+                &state,
+                None,
+                "logout_failed",
+                Some("invalid_token"),
+                addr.ip(),
+            )
+            .await;
+            return Err(ApiError::Unauthorized);
+        }
+    };
     let store = TokenStore::new(&state.redis);
     store.revoke_refresh_token(claims.jti).await?;
 
@@ -476,6 +599,7 @@ pub async fn logout(
 
     tracing::info!(user_id = %claims.sub, ip = %addr.ip(), event = "logout");
     record_auth_event("logout", "");
+    audit(&state, Some(claims.sub), "logout", None, addr.ip()).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -519,6 +643,14 @@ pub async fn password_reset_request(
         } else {
             tracing::info!(user_id = %user.id, ip = %addr.ip(), event = "password_reset_requested");
             record_auth_event("password_reset_requested", "");
+            audit(
+                &state,
+                Some(user.id),
+                "password_reset_requested",
+                None,
+                addr.ip(),
+            )
+            .await;
         }
     }
 
@@ -567,6 +699,14 @@ pub async fn password_reset_confirm(
 
     tracing::info!(user_id = %user_id, ip = %addr.ip(), event = "password_reset_confirmed");
     record_auth_event("password_reset_confirmed", "");
+    audit(
+        &state,
+        Some(user_id),
+        "password_reset_confirmed",
+        None,
+        addr.ip(),
+    )
+    .await;
     Ok(StatusCode::OK)
 }
 
@@ -612,6 +752,14 @@ pub async fn email_verify_request(
         } else {
             tracing::info!(user_id = %user.id, ip = %addr.ip(), event = "verification_requested");
             record_auth_event("verification_requested", "");
+            audit(
+                &state,
+                Some(user.id),
+                "verification_requested",
+                None,
+                addr.ip(),
+            )
+            .await;
         }
     }
 
@@ -653,6 +801,7 @@ pub async fn email_verify_confirm(
 
     tracing::info!(user_id = %user_id, ip = %addr.ip(), event = "email_verified");
     record_auth_event("email_verified", "");
+    audit(&state, Some(user_id), "email_verified", None, addr.ip()).await;
     Ok(StatusCode::OK)
 }
 

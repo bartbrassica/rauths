@@ -1,3 +1,4 @@
+mod audit_log_repository;
 mod email_verification_token_repository;
 mod error;
 mod lockout_store;
@@ -7,6 +8,7 @@ mod role_repository;
 mod token_store;
 mod user_repository;
 
+pub use audit_log_repository::AuditLogRepository;
 pub use email_verification_token_repository::EmailVerificationTokenRepository;
 pub use error::DataError;
 pub use lockout_store::LockoutStore;
