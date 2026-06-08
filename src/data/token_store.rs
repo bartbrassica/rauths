@@ -43,6 +43,23 @@ impl<'a> TokenStore<'a> {
         Ok(val.and_then(|s| s.parse().ok()))
     }
 
+    /// Adds an access token's `jti` to the revocation list for the remainder of its lifetime,
+    /// so a stolen access token can't be used after logout even though it's still unexpired.
+    pub async fn revoke_access_token(&self, jti: Uuid, ttl_secs: u64) -> Result<(), DataError> {
+        let mut conn = self.client.get_multiplexed_async_connection().await?;
+        let key = format!("revoked_access:{jti}");
+        let _: () = conn.set_ex(key, "1", ttl_secs).await?;
+        Ok(())
+    }
+
+    /// Returns true if the given access token `jti` has been revoked.
+    pub async fn is_access_token_revoked(&self, jti: Uuid) -> Result<bool, DataError> {
+        let mut conn = self.client.get_multiplexed_async_connection().await?;
+        let key = format!("revoked_access:{jti}");
+        let exists: bool = conn.exists(key).await?;
+        Ok(exists)
+    }
+
     pub async fn store_oauth_state(&self, state: &str, provider: &str) -> Result<(), DataError> {
         let mut conn = self.client.get_multiplexed_async_connection().await?;
         let key = format!("oauth_state:{state}");
@@ -170,6 +187,28 @@ mod tests {
         let store = TokenStore::new(&client);
         let count = store.revoke_all_sessions(Uuid::new_v4()).await.unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[tokio::test]
+    async fn access_token_is_not_revoked_by_default() {
+        let client = test_client();
+        let store = TokenStore::new(&client);
+        let revoked = store.is_access_token_revoked(Uuid::new_v4()).await.unwrap();
+        assert!(!revoked);
+    }
+
+    #[tokio::test]
+    async fn revoked_access_token_is_reported_as_revoked() {
+        let client = test_client();
+        let store = TokenStore::new(&client);
+        let jti = Uuid::new_v4();
+
+        store.revoke_access_token(jti, 60).await.unwrap();
+
+        assert!(store.is_access_token_revoked(jti).await.unwrap());
+
+        let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+        let _: () = conn.del(format!("revoked_access:{jti}")).await.unwrap();
     }
 
     #[tokio::test]

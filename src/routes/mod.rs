@@ -421,6 +421,7 @@ impl LogoutRequest {
 }
 
 pub async fn logout(
+    AuthUser(access_claims): AuthUser,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AppState>,
     Json(body): Json<LogoutRequest>,
@@ -430,9 +431,18 @@ pub async fn logout(
         tracing::warn!(ip = %addr.ip(), event = "logout_failed", reason = "invalid_token");
         ApiError::Unauthorized
     })?;
-    TokenStore::new(&state.redis)
-        .revoke_refresh_token(claims.jti)
-        .await?;
+    let store = TokenStore::new(&state.redis);
+    store.revoke_refresh_token(claims.jti).await?;
+
+    // Block the access token for the remainder of its lifetime so a stolen
+    // copy can't be used after the user has logged out.
+    let remaining = access_claims.exp - chrono::Utc::now().timestamp();
+    if remaining > 0 {
+        store
+            .revoke_access_token(access_claims.jti, remaining as u64)
+            .await?;
+    }
+
     tracing::info!(user_id = %claims.sub, ip = %addr.ip(), event = "logout");
     Ok(StatusCode::NO_CONTENT)
 }

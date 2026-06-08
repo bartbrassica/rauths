@@ -1,7 +1,4 @@
-use std::{
-    net::SocketAddr,
-    sync::Arc,
-};
+use std::{net::SocketAddr, sync::Arc};
 
 use sqlx::PgPool;
 use tokio::net::TcpListener;
@@ -367,9 +364,11 @@ async fn logout_returns_204_and_revokes_refresh_token(pool: PgPool) {
         .unwrap();
 
     let refresh_token = login["refresh_token"].as_str().unwrap();
+    let access_token = login["access_token"].as_str().unwrap();
 
     let logout = client
         .post(format!("{base}/logout"))
+        .bearer_auth(access_token)
         .json(&serde_json::json!({"refresh_token": refresh_token}))
         .send()
         .await
@@ -377,7 +376,7 @@ async fn logout_returns_204_and_revokes_refresh_token(pool: PgPool) {
 
     assert_eq!(logout.status(), 204);
 
-    // Revoked token must be rejected on next refresh attempt.
+    // Revoked refresh token must be rejected on next refresh attempt.
     let replay = client
         .post(format!("{base}/refresh"))
         .json(&serde_json::json!({"refresh_token": refresh_token}))
@@ -386,6 +385,55 @@ async fn logout_returns_204_and_revokes_refresh_token(pool: PgPool) {
         .unwrap();
 
     assert_eq!(replay.status(), 401);
+}
+
+#[sqlx::test]
+async fn logout_revokes_the_access_token_used_to_authenticate(pool: PgPool) {
+    let (base, captured) = spawn_app(pool).await;
+    let client = reqwest::Client::new();
+
+    register_and_verify(&base, &client, &captured, "dave@example.com", "hunter2!").await;
+
+    let login: serde_json::Value = client
+        .post(format!("{base}/login"))
+        .json(&serde_json::json!({"email": "dave@example.com", "password": "hunter2!"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let refresh_token = login["refresh_token"].as_str().unwrap();
+    let access_token = login["access_token"].as_str().unwrap();
+
+    // The access token works before logout.
+    let me_before = client
+        .get(format!("{base}/me"))
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me_before.status(), 200);
+
+    let logout = client
+        .post(format!("{base}/logout"))
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({"refresh_token": refresh_token}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(logout.status(), 204);
+
+    // The very same (still cryptographically valid, unexpired) access token
+    // must now be rejected — it's been added to the revocation list.
+    let me_after = client
+        .get(format!("{base}/me"))
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(me_after.status(), 401);
 }
 
 // --- /register input validation ---
@@ -528,10 +576,24 @@ async fn refresh_with_empty_token_returns_422(pool: PgPool) {
 
 #[sqlx::test]
 async fn logout_with_empty_token_returns_422(pool: PgPool) {
-    let (base, _captured) = spawn_app(pool).await;
+    let (base, captured) = spawn_app(pool).await;
+    let client = reqwest::Client::new();
 
-    let res = reqwest::Client::new()
+    register_and_verify(&base, &client, &captured, "carol@example.com", "hunter2!").await;
+
+    let login: serde_json::Value = client
+        .post(format!("{base}/login"))
+        .json(&serde_json::json!({"email": "carol@example.com", "password": "hunter2!"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let res = client
         .post(format!("{base}/logout"))
+        .bearer_auth(login["access_token"].as_str().unwrap())
         .json(&serde_json::json!({"refresh_token": ""}))
         .send()
         .await
